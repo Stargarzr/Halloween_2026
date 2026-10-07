@@ -1,71 +1,63 @@
-# Boo Ballot
+# Boo Ballot — Netlify edition
 
-A local-first, AI-takes-over-Halloween costume contest app with persistent entries, photos, code-free voting, and permanent tie-break records. **No website has been published.**
+Private coworker costume voting, prepared for **Netlify + Supabase**. No hosted deployment or live email sender has been configured yet.
 
-## Try it on this Mac
+## What is ready
 
-The running preview is at **http://localhost:5173/**. Click **Organizer login**, then **Organizer**. The development preview uses a simulated organizer account, `seedy@sites.test`; it does not need a password. This convenience is local-only and must never be exposed as a public development server.
+- Standard Next.js app and Netlify build configuration.
+- PostgreSQL schema, unique account/category votes, saved tie draws, and private Supabase photo storage.
+- Email-code sign-in with server-verified Supabase users. Only exact `cgi.com` and `cgifederal.com` domains may enter.
+- Four administrators: `teri.musick@cgi.com`, `zachary.sarver@cgi.com`, `heath.rasnake@cgi.com`, `morghan.scales@cgi.com`. Everyone else has viewing/voting access only.
+- Stable Supabase user IDs identify ballots across devices and email changes. This is one ballot per account, not proof that a person has only one company account.
+- Previous local test contestants and their linked uploaded photos were removed. New databases start empty. Nothing is copied from old Cloudflare storage.
 
-Six fictional sample contestants are included. Their AI-generated portraits are illustrations, including the Viking example; they are not real employee photos.
+## Local preview
 
-1. In Organizer, choose **Add contestant**, then use the visible file picker to choose a photo. You can also drag a photo from Photos/Finder onto the drop zone, or copy it in Photos, click the drop zone, and press Command-V. Your JPG, PNG, or WebP (up to 8 MB) appears in the preview immediately. Choose one category per entry and complete the fields.
-2. Suggest and edit a tagline. For green-screen photos, optionally choose **Generate category background** if an API key is configured. Review faces, costumes, the background, and the tagline preview, then **Approve & publish**. Publish here means visible in this local contest, not deploying a website.
-3. Remove the sample contestants before entering the real event. Keep at least one published entry in every category.
-4. **Open voting** starts the live ballot. Attendees can tap a contestant photo or choose its vote button, then confirm one final vote in each category.
-5. Add, edit, publish, or remove contestants before or during voting. **Pause voting** stops ballots temporarily, and **Resume voting** relaunches it.
-6. **Finalize results** permanently ends voting and locks the roster. In Leaderboard, use **Draw the winner** for any tied category. Each tied entrant has an equal chance; the selected winner, tied entrants, and timestamp are public and saved permanently.
+Requires Node.js 24 and npm. Run `npm ci`, then `npm run dev`, or use `Start Boo Ballot.command` on this Mac. Open http://localhost:5173.
 
-Voting can be paused and resumed as often as needed. **Reset voting round** clears votes and tie-break records while keeping contestants, then returns the event to draft. Finalizing cannot be undone through the app. Use a separate copy/database for rehearsal if you need to preserve the current event. A zero-vote category is shown as having no result; it does not award a random winner.
+With no Supabase environment variables, expand **Local testing** on the sign-in page and choose Organizer or Voter preview. The controls exist only in local development, bind to loopback, and do not send email. Production ignores all preview cookies and requires a verified Supabase session.
 
-## Run locally from a fresh checkout
+To add the six fictional sample contestants for local testing, run `node scripts/seed-local-preview.mjs` while the preview is running. Samples are never automatically added to a hosted database.
 
-Requires Node.js 22.13+ with npm. From this directory:
+Local data persists in ignored `.local-contest/` (PostgreSQL via PGlite and local photo files). Do not share that folder. Local and hosted data are separate.
 
-```sh
-npm ci
-cp .env.example .env
-npm run build
-node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 execute DB --local --config dist/server/wrangler.json --persist-to .wrangler/state --file drizzle/0000_familiar_nicolaos.sql
-npm run dev
-```
+## Connect Netlify and Supabase
 
-Run the migration only once for a fresh local database. Subsequent launches use only `npm run dev`. Open the URL printed by the server (normally http://localhost:5173). Keep that terminal open; Ctrl+C stops it. The provided **Start Boo Ballot.command** also starts the already-installed app on this Mac.
+1. Create a Netlify account and a Supabase project. No paid purchase is automated.
+2. Run these SQL files in the Supabase SQL Editor, in order:
+   - `supabase/migrations/202610070001_contest.sql`
+   - `supabase/migrations/202610070002_private_storage.sql`
+   These create empty contest tables with row-level security, revoke browser database access, and create a **private** `costume-photos` bucket. The server accesses the database; there are intentionally no browser read/write policies.
+3. Add the environment variables from `.env.example` to Netlify, scoped to Functions and Builds:
+   - `DATABASE_URL`: Supabase transaction-pooler PostgreSQL URL with `sslmode=require`. Keep the database password secret.
+   - `SUPABASE_URL`: your project URL.
+   - `SUPABASE_PUBLISHABLE_KEY`: the project's publishable (or legacy anon) key.
+   - `SUPABASE_SERVICE_ROLE_KEY`: server-only storage access. Never prefix this with `NEXT_PUBLIC_`.
+   - `OPENAI_API_KEY`: optional, paid image generation; leave unset if unwanted.
+4. In Supabase Authentication, enable Email and require email confirmation. Configure the email template to display `{{ .Token }}` for both initial signup confirmation and subsequent magic-link/OTP messages. The app accepts six- to eight-digit codes. Set the Site URL to the final Netlify URL. Disable unused login providers.
+5. **Set up custom SMTP before inviting coworkers.** Supabase's default sender is restricted to project-team addresses and very low sending limits. Configure a production sender (for example Resend, Postmark, or another SMTP provider), verify a sender domain you control, and raise auth email limits for 100+ people arriving together. Do not attempt to verify company DNS without authorization. Test delivery to both company email domains and allow time for spam filtering. This account/sender setup is still pending.
+6. Connect GitHub to Netlify. If the repository contains this app in `boo-ballot/`, use the repository-root `netlify.toml`. If this folder is the repository root, use its own `netlify.toml`. Build: `npm run build`; publish: `.next`; Node: 24. Netlify automatically supplies its Next.js adapter.
+7. Use separate Supabase projects for test deployments and the live contest so preview changes cannot affect real ballots. Do not place production secrets into untrusted PR previews.
+8. Before sharing, verify sign-in mail, exact-domain restrictions, all four admin accounts, ordinary-voter denial of edits, private image URLs, duplicate votes across browsers, and an upload from a phone.
 
-Data and uploaded images persist in `.wrangler/state/`, outside source control. Back up that folder with the server stopped to preserve a local event. A random browser-only identifier is stored locally to remember each device's three votes. Never share `.env` or this data directory.
+No Active Directory, company SSO, or internal company systems are required. The domain rule admits any verified mailbox in the two allowed domains, not only a local-office roster.
 
-## Optional AI backgrounds
+## Operating the contest
 
-The app works without an AI key: upload a finished image and edit the tagline. Tagline suggestions are built in and require no API key.
+The original contest headings and categories are preserved. The announcement's categories differ; changing them is deferred pending explicit confirmation. The announcement's timing is informational, not an automatic schedule: administrators open, pause, resume, and finalize voting manually.
 
-To enable image editing locally, add your own OpenAI API key to the ignored `.env` file:
+Publish at least one contestant in each category before opening votes. Each entry belongs to one category. Finalizing locks roster changes and voting; a reset clears votes/draws but preserves contestants. Uploaded JPG/PNG/WebP files must be at most **4 MB**, keeping requests within Netlify's binary payload allowance. Photos are retrieved through authenticated app routes, including checks that ordinary voters can view only published entries.
 
-```dotenv
-ADMIN_EMAILS=seedy@sites.test
-OPENAI_API_KEY=your_key_here
-```
+Optional AI image generation is still synchronous; provider latency may exceed the hosting timeout. It is not required for uploading photos or voting and needs live hosting validation before enabling it for the event.
 
-Restart the preview. **Generate spooky background** sends the uploaded photo to OpenAI's Images Edit API using `gpt-image-2`, asks to preserve people and costumes, and saves the result in object storage for review. An API account with image-model access and billing is required. The key is server-side only. Generated images may alter faces or costume details; the organizer must review them before publication. Upload a finished image for exact manual control. The editable tagline is composited over the bottom of the image in the app; it is not burned into the uploaded file.
-
-Implementation follows [official OpenAI image-generation documentation](https://developers.openai.com/api/docs/guides/image-generation). Live paid AI generation has not been tested because no API key was supplied.
-
-## Hosting later
-
-Hosting is deliberately deferred. The app currently targets a Cloudflare-compatible Worker, a D1 database (`DB`), and R2 image storage (`BUCKET`). `.openai/hosting.json` records the reserved, unpublished Sites project and logical storage bindings. It does not publish anything by itself.
-
-When ready, one supported path is Sites: build the project, provision the declared bindings, apply the checked-in Drizzle migrations, set `ADMIN_EMAILS` to the real organizer's exact sign-in email, and publish through the Sites workflow. Sites supplies trusted sign-in headers and `/signin-with-chatgpt` and `/signout-with-chatgpt` routes. Keep `OPENAI_API_KEY` as a hosted secret if AI images are wanted. Local data is separate and is not automatically uploaded.
-
-If choosing another host, the server must have a **trusted authentication gateway** that strips visitor-supplied `oai-authenticated-user-*` headers, verifies the organizer login, and injects verified identity headers. The current app trusts those headers because Sites owns them. Do not expose the raw Worker directly without replacing this authentication integration. Set a real organizer email allowlist; missing `ADMIN_EMAILS` denies all admin access. Replace the login links when implementing another identity provider. A plain static host cannot support these persistence and vote-validation requirements.
-
-Public hosting would make published contestant photos, names, and results available to anyone with the link. The current code-free setup prevents repeat votes from the same browser, but clearing browser data or using another browser creates a new voting identity. When you choose a host, we should connect the host's trusted sign-in or workplace access system to enforce one vote per attendee securely. Private or workplace-only viewing can be selected then.
-
-## Validation
+## Verification
 
 ```sh
 npm run build
-node node_modules/typescript/bin/tsc --noEmit
 node scripts/test-local.mjs
+node scripts/test-http.mjs
 ```
 
-The integration test starts a separate local Worker on port 5174 with a fresh database under `.wrangler/test-<timestamp>`. It does not change the interactive event on port 5173. It checks authorization, code-free browser voting, category eligibility, votes before/after the voting window, concurrent duplicate submissions, three-category ballots, locked entries, totals, and simultaneous permanent tie-break draws. Test databases remain available for inspection.
+The first test suite validates email/role rules and real PostgreSQL constraints using isolated PGlite. The HTTP suite launches a separate Next.js server on port 5174 and uses temporary data, leaving the interactive preview alone. Local tests do **not** verify Supabase email delivery, hosted connection credentials, or a live Netlify deployment.
 
-The server records each vote using a single conditional SQL statement that checks the current voting state and entry eligibility. A random browser identity is hashed server-side; a unique `(browser, category)` database index rejects repeat votes even when simultaneous. Tie draws use cryptographic rejection sampling for equal selection probabilities and a unique category record; concurrent draw requests return the same saved winner and timestamp. Entries can be edited until results are finalized. Client-side disabled buttons are convenience, not the enforcement mechanism.
+Historical Cloudflare files in `drizzle/`, `.openai/`, and old framework helpers are retained as references; they are not the deployment path. Do not publish old ZIP archives: they predate these changes. Never upload `.env`, `.local-contest`, `.wrangler`, `.next`, `.next-test`, `node_modules`, or build outputs to GitHub.

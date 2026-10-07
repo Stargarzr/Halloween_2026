@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Boo Ballot · Office Costume Contest",
-  description: "Meet the costumes, vote for your favorites, and celebrate your office Halloween champions.",
+  description: "October 29, 2026. Verify your work email, meet the costumes, and vote in the Lebanon Social Club costume contest.",
   other: {
     "codex-preview": "development",
   },

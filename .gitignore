@@ -46,3 +46,7 @@ next-env.d.ts
 /work/
 
 !.env.example
+
+/.local-contest/
+/.netlify/
+/.next-test/

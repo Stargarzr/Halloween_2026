@@ -11,4 +11,4 @@ if [[ ! -x "$BOO_NODE" ]]; then
 fi
 export PATH="${BOO_NODE:h}:$PATH"
 echo "Boo Ballot starts at http://localhost:5173. Keep this window open."
-"$BOO_NODE" scripts/run-framework.mjs dev
+"$BOO_NODE" node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port 5173
