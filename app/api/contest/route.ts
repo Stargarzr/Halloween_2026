@@ -51,7 +51,8 @@ await db.prepare("INSERT INTO event(id,state) VALUES(1,'open') ON CONFLICT(id) D
 }
 if(action==='close'){await db.prepare("UPDATE event SET state='paused' WHERE id=1 AND state='open'").run();return json({ok:true});}
 if(action==='finalize'){await db.prepare("UPDATE event SET state='closed' WHERE id=1 AND state='paused'").run();if(await state()!=='closed')return fail('Pause voting before finalizing results.');return json({ok:true});}
-if(action==='reset'){await db.batch([db.prepare('DELETE FROM votes'),db.prepare('DELETE FROM draws'),db.prepare("INSERT INTO event(id,state) VALUES(1,'draft') ON CONFLICT(id) DO UPDATE SET state='draft'")]);return json({ok:true});}
+// The UPDATE's row lock (not a snapshot read) is what makes reset safe against a concurrent finalize/open; the delete predicates re-read the row inside the same transaction.
+if(action==='reset'){const [guard]=await db.batch([db.prepare("UPDATE event SET state='draft' WHERE id=1 AND state IN ('draft','paused')"),db.prepare("DELETE FROM votes WHERE (SELECT state FROM event WHERE id=1)='draft'"),db.prepare("DELETE FROM draws WHERE (SELECT state FROM event WHERE id=1)='draft'")]);if(!(guard.rowCount??guard.affectedRows))return fail('Pause voting before resetting; finalized results cannot be reset.',409);return json({ok:true});}
 if(action==='draw'){
 if(current!=='closed'||!categories.includes(body.category))return fail('Close voting before drawing a winner.');
 const prior=await db.prepare('SELECT * FROM draws WHERE category=?').bind(body.category).first();if(prior)return json({draw:prior});
