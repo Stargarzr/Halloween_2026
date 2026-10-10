@@ -48,7 +48,19 @@ try{
  assert.equal((await call({action:'save',entry:{...entries[0],description:'Edited while voted'}})).status,200);
  assert.equal((await call({action:'save',entry:{...entries[1],published:false}})).status,200);
  assert.equal((await call({action:'save',entry:entries[1]})).status,200);
- assert.equal((await get(voterA)).standings.find(s=>s.id===entries[0].id).votes,1);
+ assert.equal((await get()).standings.find(s=>s.id===entries[0].id).votes,1);
+ // C4 visibility: voters see no counts until closed; rows ordered by category then name; entries derived from the same rows.
+ const voterView=await get(voterA);assert.ok(voterView.standings.length===3&&voterView.standings.every(s=>s.votes===null),'votes hidden while open');
+ assert.deepEqual(voterView.standings.map(s=>s.category),[...categories].sort());assert.deepEqual(voterView.entries.map(e=>e.id).sort(),entries.map(e=>e.id).sort());assert.ok(voterView.entries.every(e=>!('votes' in e)));
+ assert.equal((await call({action:'save',entry:{...entries[1],published:1}})).status,200);assert.equal((await get(voterA)).entries.length,3,'published:1 accepted');
+ // C4 delete: refused with votes; a shared photo survives deleting one of its entries; an unshared photo is removed; unknown id is 404.
+ assert.equal((await call({action:'delete',id:entries[0].id})).status,409);
+ assert.equal((await call({action:'delete',id:entries[2].id})).status,200);assert.equal((await fetch(root+'/api/image/'+image,{headers:{Cookie:voterA}})).status,200,'shared image kept');
+ assert.equal((await call({action:'save',entry:entries[2]})).status,200);
+ const second=new FormData();second.set('file',new Blob([bytes],{type:'image/png'}),'second.png');const secondUpload=await fetch(root+'/api/contest',{method:'POST',headers:{Origin:root,Cookie:admin},body:second});const {image:soloImage}=await secondUpload.json();
+ const solo={id:crypto.randomUUID(),name:'Solo',costume:'Ghost',category:categories[2],description:'',tagline:'',image:soloImage,published:false};assert.equal((await call({action:'save',entry:solo})).status,200);
+ assert.equal((await fetch(root+'/api/image/'+soloImage,{headers:{Cookie:admin}})).status,200);assert.equal((await call({action:'delete',id:solo.id})).status,200);assert.equal((await fetch(root+'/api/image/'+soloImage,{headers:{Cookie:admin}})).status,404,'unshared image removed');
+ assert.equal((await call({action:'delete',id:crypto.randomUUID()})).status,404);
  const resetBlocked='Pause voting before resetting; finalized results cannot be reset.';
  r=await call({action:'reset'});assert.equal(r.status,409);assert.equal(r.data.error,resetBlocked);
  assert.equal((await get(voterA)).state,'open');
@@ -61,10 +73,11 @@ try{
  assert.equal((await call({action:'open'})).status,200);
  assert.equal((await call({action:'close'})).status,200);
  assert.equal((await call({action:'finalize'})).status,200);
+ assert.equal((await call({action:'delete',id:entries[1].id})).status,409,'delete when closed');assert.ok((await get()).entries.some(e=>e.id===entries[1].id),'entry survives refused delete');
  assert.equal((await call({action:'save',entry:entries[0]})).status,400);
  assert.equal((await call({action:'open'})).status,400);
  r=await call({action:'reset'});assert.equal(r.status,409);assert.equal(r.data.error,resetBlocked);
  assert.equal((await get()).state,'closed');
  assert.equal((await fetch(root+'/api/contest',{method:'POST',headers:{Origin:'https://evil.example',Cookie:admin,'Content-Type':'application/json'},body:JSON.stringify({action:'reset'})})).status,403);
- console.log('PASS: Next.js API authorization, loopback-only preview cookie, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, voted-entry category/published lock (409), pause/finalize, reset guard (open 409, paused 200, finalized 409), cross-origin rejection.');
+ console.log('PASS: Next.js API authorization, loopback-only preview cookie, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, voted-entry category/published lock (409), hidden standings for voters until closed, delete rules (votes 409, shared photo kept, orphan photo removed), pause/finalize, reset guard (open 409, paused 200, finalized 409), cross-origin rejection.');
 }catch(e){console.error(output.slice(-5000));throw e}finally{server.kill('SIGTERM');await rm(tsconfigPath,{force:true})}

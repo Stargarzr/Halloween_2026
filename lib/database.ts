@@ -34,4 +34,7 @@ export class Statement {
  async run(){const r=await this.execute();return {meta:{changes:r.rowCount??r.affectedRows??0}}}
  async execute(query?:Query){return (query??(await connection()).query)(this.sql,this.params)}
 }
-export function database(){return {prepare:(sql:string)=>new Statement(sql),batch:async(statements:Statement[])=>(await connection()).transaction(async query=>{const results=[];for(const statement of statements)results.push(await statement.execute(query));return results})}}
+// transaction(fn) runs fn inside one database transaction; fn must execute statements only through the `run` it receives
+// (Statement.first/all/run would escape to the pool). Used where application logic must sit between locked statements.
+export type Run=(statement:Statement)=>Promise<{rows:any[];rowCount?:number|null;affectedRows?:number}>;
+export function database(){return {prepare:(sql:string)=>new Statement(sql),batch:async(statements:Statement[])=>(await connection()).transaction(async query=>{const results=[];for(const statement of statements)results.push(await statement.execute(query));return results}),transaction:async<T>(fn:(run:Run)=>Promise<T>)=>(await connection()).transaction(query=>fn(statement=>statement.execute(query)))}}
