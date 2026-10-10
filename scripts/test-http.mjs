@@ -35,7 +35,8 @@ try{
  assert.equal((await fetch(root+'/api/image/'+image,{headers:{Cookie:voterA}})).status,404);
  const entries=categories.map((category,i)=>({id:crypto.randomUUID(),name:'Test '+i,costume:'Robot',category,description:'Isolated test',tagline:'',image,published:true}));
  for(const entry of entries)assert.equal((await call({action:'save',entry})).status,200);
- assert.equal((await fetch(root+'/api/image/'+image,{headers:{Cookie:voterA}})).status,200);
+ const published=await fetch(root+'/api/image/'+image,{headers:{Cookie:voterA}});assert.equal(published.status,200);assert.equal(published.headers.get('cache-control'),'private, max-age=86400, immutable','published photo cached per device');
+ const publishedAdmin=await fetch(root+'/api/image/'+image,{headers:{Cookie:admin}});assert.equal(publishedAdmin.status,200);assert.equal(publishedAdmin.headers.get('cache-control'),'private, max-age=86400, immutable');
  assert.equal((await call({action:'vote',entry:entries[0].id,category:categories[0]},voterA)).status,400);
  assert.equal((await call({action:'open'})).status,200);
  const results=await Promise.all(Array.from({length:6},()=>call({action:'vote',entry:entries[0].id,category:categories[0],voter:crypto.randomUUID()},voterA)));
@@ -59,7 +60,8 @@ try{
  assert.equal((await call({action:'save',entry:entries[2]})).status,200);
  const second=new FormData();second.set('file',new Blob([bytes],{type:'image/png'}),'second.png');const secondUpload=await fetch(root+'/api/contest',{method:'POST',headers:{Origin:root,Cookie:admin},body:second});const {image:soloImage}=await secondUpload.json();
  const solo={id:crypto.randomUUID(),name:'Solo',costume:'Ghost',category:categories[2],description:'',tagline:'',image:soloImage,published:false};assert.equal((await call({action:'save',entry:solo})).status,200);
- assert.equal((await fetch(root+'/api/image/'+soloImage,{headers:{Cookie:admin}})).status,200);assert.equal((await call({action:'delete',id:solo.id})).status,200);assert.equal((await fetch(root+'/api/image/'+soloImage,{headers:{Cookie:admin}})).status,404,'unshared image removed');
+ const draft=await fetch(root+'/api/image/'+soloImage,{headers:{Cookie:admin}});assert.equal(draft.status,200);assert.equal(draft.headers.get('cache-control'),'private, no-store','draft photo never cached');assert.equal((await fetch(root+'/api/image/'+soloImage,{headers:{Cookie:voterA}})).status,404,'draft photo hidden from voters');
+ assert.equal((await call({action:'delete',id:solo.id})).status,200);assert.equal((await fetch(root+'/api/image/'+soloImage,{headers:{Cookie:admin}})).status,404,'unshared image removed');
  assert.equal((await call({action:'delete',id:crypto.randomUUID()})).status,404);
  const resetBlocked='Pause voting before resetting; finalized results cannot be reset.';
  r=await call({action:'reset'});assert.equal(r.status,409);assert.equal(r.data.error,resetBlocked);
@@ -79,5 +81,5 @@ try{
  r=await call({action:'reset'});assert.equal(r.status,409);assert.equal(r.data.error,resetBlocked);
  assert.equal((await get()).state,'closed');
  assert.equal((await fetch(root+'/api/contest',{method:'POST',headers:{Origin:'https://evil.example',Cookie:admin,'Content-Type':'application/json'},body:JSON.stringify({action:'reset'})})).status,403);
- console.log('PASS: Next.js API authorization, loopback-only preview cookie, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, voted-entry category/published lock (409), hidden standings for voters until closed, delete rules (votes 409, shared photo kept, orphan photo removed), pause/finalize, reset guard (open 409, paused 200, finalized 409), cross-origin rejection.');
+ console.log('PASS: Next.js API authorization, loopback-only preview cookie, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, voted-entry category/published lock (409), hidden standings for voters until closed, delete rules (votes 409, shared photo kept, orphan photo removed), image cache headers (published max-age, draft no-store), pause/finalize, reset guard (open 409, paused 200, finalized 409), cross-origin rejection.');
 }catch(e){console.error(output.slice(-5000));throw e}finally{server.kill('SIGTERM');await rm(tsconfigPath,{force:true})}
