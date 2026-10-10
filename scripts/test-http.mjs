@@ -1,14 +1,19 @@
 import {spawn} from 'node:child_process';
-import {mkdtemp} from 'node:fs/promises';
+import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+const port=Number(process.env.TEST_HTTP_PORT||5174);
+if(!Number.isInteger(port)||port<1024||port>65535)throw Error(`TEST_HTTP_PORT must be an integer from 1024 to 65535 (got "${process.env.TEST_HTTP_PORT}").`);
 const directory=await mkdtemp(path.join(tmpdir(),'boo-http-'));
-const root='http://127.0.0.1:5174';
-const server=spawn(process.execPath,['node_modules/next/dist/bin/next','dev','--webpack','--hostname','127.0.0.1','--port','5174'],{env:{...process.env,NODE_ENV:'development',SUPABASE_URL:'',SUPABASE_PUBLISHABLE_KEY:'',DATABASE_URL:'',NETLIFY:'',CONTEST_LOCAL_DATA_DIR:directory,CONTEST_TEST_BUILD_DIR:'.next-test'},stdio:['ignore','pipe','pipe']});
-let output='';server.stdout.on('data',d=>output+=d);server.stderr.on('data',d=>output+=d);
+const root=`http://127.0.0.1:${port}`;
+// next dev appends its distDir type globs to the TypeScript config it is pointed at, so each port gets a throwaway config (ignored by git) and tsconfig.json is never touched.
+const tsconfigPath=`tsconfig.test-${port}.json`;
+await writeFile(tsconfigPath,JSON.stringify({extends:'./tsconfig.json'})+'\n');
+const server=spawn(process.execPath,['node_modules/next/dist/bin/next','dev','--webpack','--hostname','127.0.0.1','--port',String(port)],{env:{...process.env,NODE_ENV:'development',SUPABASE_URL:'',SUPABASE_PUBLISHABLE_KEY:'',DATABASE_URL:'',NETLIFY:'',CONTEST_LOCAL_DATA_DIR:directory,CONTEST_TEST_BUILD_DIR:`.next-test-${port}`,CONTEST_TEST_TSCONFIG:tsconfigPath},stdio:['ignore','pipe','pipe']});
+let output='',exited=false;server.stdout.on('data',d=>output+=d);server.stderr.on('data',d=>output+=d);server.on('exit',()=>{exited=true});
 try{
- let ready=false;for(let i=0;i<60;i++){try{const r=await fetch(root+'/sign-in');if(r.ok){ready=true;break}}catch{}await new Promise(r=>setTimeout(r,500))}if(!ready)throw Error(output);
+ let ready=false;for(let i=0;i<60;i++){if(exited)throw Error('Next.js server exited before becoming ready.\n'+output);try{const r=await fetch(root+'/sign-in');if(r.ok){ready=true;break}}catch{}await new Promise(r=>setTimeout(r,500))}if(!ready)throw Error(output);
  const admin='contest-local-preview=admin',voterA=`contest-local-preview=voter:${crypto.randomUUID()}`,voterB=`contest-local-preview=voter:${crypto.randomUUID()}`;
  async function call(body,cookie=admin){const r=await fetch(root+'/api/contest',{method:'POST',headers:{Origin:root,'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify(body)});return {status:r.status,data:await r.json()}}
  async function get(cookie=admin){const r=await fetch(root+'/api/contest',{headers:{Cookie:cookie}});assert.equal(r.status,200);return r.json()}
@@ -42,4 +47,4 @@ try{
  assert.equal((await call({action:'ballot'},voterA)).data.votes.length,0);
  assert.equal((await fetch(root+'/api/contest',{method:'POST',headers:{Origin:'https://evil.example',Cookie:admin,'Content-Type':'application/json'},body:JSON.stringify({action:'reset'})})).status,403);
  console.log('PASS: Next.js API authorization, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, pause/finalize/reset, cross-origin rejection.');
-}catch(e){console.error(output.slice(-5000));throw e}finally{server.kill('SIGTERM')}
+}catch(e){console.error(output.slice(-5000));throw e}finally{server.kill('SIGTERM');await rm(tsconfigPath,{force:true})}

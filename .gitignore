@@ -49,4 +49,5 @@ next-env.d.ts
 
 /.local-contest/
 /.netlify/
-/.next-test/
+/.next-*/
+/tsconfig.test-*.json

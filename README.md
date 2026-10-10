@@ -54,10 +54,10 @@ Optional AI image generation is still synchronous; provider latency may exceed t
 
 ```sh
 npm run build
-node scripts/test-local.mjs
-node scripts/test-http.mjs
+npm test
+TEST_HTTP_PORT=5174 npm run test:http
 ```
 
-The first test suite validates email/role rules and real PostgreSQL constraints using isolated PGlite. The HTTP suite launches a separate Next.js server on port 5174 and uses temporary data, leaving the interactive preview alone. Local tests do **not** verify Supabase email delivery, hosted connection credentials, or a live Netlify deployment.
+The first test suite validates email/role rules and real PostgreSQL constraints using isolated PGlite. The HTTP suite launches a separate Next.js server on `TEST_HTTP_PORT` (default 5174) with its own build directory and uses temporary data, leaving the interactive preview alone. Local tests do **not** verify Supabase email delivery, hosted connection credentials, or a live Netlify deployment.
 
 Historical Cloudflare files in `drizzle/`, `.openai/`, and old framework helpers are retained as references; they are not the deployment path. Do not publish old ZIP archives: they predate these changes. Never upload `.env`, `.local-contest`, `.wrangler`, `.next`, `.next-test`, `node_modules`, or build outputs to GitHub.

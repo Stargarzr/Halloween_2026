@@ -1,6 +1,7 @@
 import { Pool } from 'pg';
 import { isLocalPreview } from './runtime';
-import { readFile, mkdir } from 'node:fs/promises';
+import { applyLocalMigrations } from './migrations';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 type Query = (sql:string,params?:any[])=>Promise<{rows:any[];rowCount?:number|null;affectedRows?:number}>;
 type Connection = {query:Query;transaction:<T>(fn:(query:Query)=>Promise<T>)=>Promise<T>};
@@ -16,7 +17,7 @@ async function connect():Promise<Connection>{
  await mkdir(localDirectory,{recursive:true});
  const local=new PGlite(path.join(localDirectory,'database'));
  await local.waitReady;
- await local.exec(await readFile(path.join(process.cwd(),'supabase/migrations/202610070001_contest.sql'),'utf8'));
+ await applyLocalMigrations(sql=>local.exec(sql));
  return {query:(sql,params)=>local.query(sql,params),transaction:fn=>local.transaction(tx=>fn((sql,params)=>tx.query(sql,params)))};
 }
 function connection(){return globalDatabase.contestDatabase??=connect().catch(e=>{delete globalDatabase.contestDatabase;throw e})}
