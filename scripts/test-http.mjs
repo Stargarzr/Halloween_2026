@@ -1,4 +1,5 @@
 import {spawn} from 'node:child_process';
+import http from 'node:http';
 import {mkdtemp,rm,writeFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
@@ -18,6 +19,10 @@ try{
  async function call(body,cookie=admin){const r=await fetch(root+'/api/contest',{method:'POST',headers:{Origin:root,'Content-Type':'application/json',Cookie:cookie},body:JSON.stringify(body)});return {status:r.status,data:await r.json()}}
  async function get(cookie=admin){const r=await fetch(root+'/api/contest',{headers:{Cookie:cookie}});assert.equal(r.status,200);return r.json()}
  assert.equal((await fetch(root+'/api/contest')).status,401);
+ // C7: the preview cookie is honoured only for an exact loopback Host; fetch() cannot override Host, so use node:http.
+ const rawStatus=host=>new Promise((resolve,reject)=>http.get({host:'127.0.0.1',port,path:'/api/contest',headers:{Host:host,Cookie:admin}},r=>{r.resume();resolve(r.statusCode)}).on('error',reject));
+ assert.equal(await rawStatus(`localhost:${port}`),200);
+ for(const host of ['localhost.attacker.example','127.0.0.1.attacker.example','evil.example'])assert.equal(await rawStatus(host),401,host);
  assert.equal((await fetch(root+'/api/contest',{headers:{'oai-authenticated-user-email':'teri.musick@cgi.com','cf-access-jwt-assertion':'forged'}})).status,401);
  assert.equal((await fetch(root+'/api/auth/code',{method:'POST',headers:{Origin:root,'Content-Type':'application/json'},body:JSON.stringify({email:'outsider@gmail.com'})})).status,400);
  assert.equal((await call({action:'open'},voterA)).status,403);
@@ -37,6 +42,13 @@ try{
  assert.equal(results.filter(r=>r.status===200).length,1);assert.equal(results.filter(r=>r.status===409).length,5);
  assert.equal((await call({action:'ballot'},voterA)).data.votes.length,1);
  assert.equal((await call({action:'ballot'},voterB)).data.votes.length,0);
+ const locked='This contestant has votes, so its category and published status are locked.';
+ let r=await call({action:'save',entry:{...entries[0],published:false}});assert.equal(r.status,409);assert.equal(r.data.error,locked);
+ r=await call({action:'save',entry:{...entries[0],category:categories[1]}});assert.equal(r.status,409);assert.equal(r.data.error,locked);
+ assert.equal((await call({action:'save',entry:{...entries[0],description:'Edited while voted'}})).status,200);
+ assert.equal((await call({action:'save',entry:{...entries[1],published:false}})).status,200);
+ assert.equal((await call({action:'save',entry:entries[1]})).status,200);
+ assert.equal((await get(voterA)).standings.find(s=>s.id===entries[0].id).votes,1);
  assert.equal((await call({action:'close'})).status,200);
  assert.equal((await call({action:'vote',entry:entries[0].id,category:categories[0]},voterB)).status,400);
  assert.equal((await call({action:'finalize'})).status,200);
@@ -46,5 +58,5 @@ try{
  assert.equal((await get()).state,'draft');
  assert.equal((await call({action:'ballot'},voterA)).data.votes.length,0);
  assert.equal((await fetch(root+'/api/contest',{method:'POST',headers:{Origin:'https://evil.example',Cookie:admin,'Content-Type':'application/json'},body:JSON.stringify({action:'reset'})})).status,403);
- console.log('PASS: Next.js API authorization, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, pause/finalize/reset, cross-origin rejection.');
+ console.log('PASS: Next.js API authorization, loopback-only preview cookie, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, voted-entry category/published lock (409), pause/finalize/reset, cross-origin rejection.');
 }catch(e){console.error(output.slice(-5000));throw e}finally{server.kill('SIGTERM');await rm(tsconfigPath,{force:true})}

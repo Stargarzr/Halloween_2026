@@ -5,6 +5,8 @@ import {categories} from '@/lib/shared';
 export const dynamic='force-dynamic';
 const json=(data:any,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 const fail=(message:string,status=400)=>json({error:message},status);
+// The composite votes foreign key uses ON UPDATE/DELETE RESTRICT, which PostgreSQL reports as 23001 (restrict_violation); the plain entry reference reports 23503. Both mean "votes exist".
+const votesLock=(e:unknown)=>['23503','23001'].includes((e as any)?.code);
 async function state(){return (await database().prepare('SELECT state FROM event WHERE id=1').first<{state:string}>())?.state||'draft'}
 async function initialize(){await database().prepare("INSERT INTO event(id,state) VALUES(1,'draft') ON CONFLICT DO NOTHING").run();}
 export async function GET(){try{const member=await getMember();if(!member)return fail('Sign in with your work email to access the contest.',401);const db=database(),admin=member.admin;await initialize();const s=await state();return json({state:s,admin,account:{email:member.email,localPreview:!!member.localPreview,signOut:signOutPath()},entries:(await db.prepare(admin?'SELECT * FROM entries ORDER BY name':'SELECT * FROM entries WHERE published=1 ORDER BY name').all()).results,standings:await standings(),draws:(await db.prepare('SELECT * FROM draws').all()).results,aiEnabled:admin&&!!process.env.OPENAI_API_KEY});}catch(e){console.error(e);return fail('Contest storage is temporarily unavailable. Please try again.',503)}}
@@ -27,7 +29,7 @@ if(action==='vote'||action==='ballot'){
 const voter=await hash(member.id);await db.prepare('INSERT INTO codes(hash,created) VALUES(?,?) ON CONFLICT DO NOTHING').bind(voter,new Date().toISOString()).run();
 if(action==='ballot')return json({votes:(await db.prepare('SELECT category,entry FROM votes WHERE code=?').bind(voter).all()).results});
 if(!categories.includes(body.category)||typeof body.entry!=='string')return fail('Select an eligible contestant.');
-try{const r=await db.prepare("INSERT INTO votes(id,code,category,entry) SELECT ?,?,?,e.id FROM entries e,event s WHERE e.id=? AND e.category=? AND e.published=1 AND s.id=1 AND s.state='open'").bind(crypto.randomUUID(),voter,body.category,body.entry,body.category).run();if(!r.meta.changes)return fail('Voting is closed or this entry is unavailable.');}catch(e){if((e as any)?.code==='23505')return fail('Your account has already voted in this category.',409);throw e}
+try{const r=await db.prepare("INSERT INTO votes(id,code,category,entry) SELECT ?,?,?,e.id FROM entries e,event s WHERE e.id=? AND e.category=? AND e.published=1 AND s.id=1 AND s.state='open'").bind(crypto.randomUUID(),voter,body.category,body.entry,body.category).run();if(!r.meta.changes)return fail('Voting is closed or this entry is unavailable.');}catch(e){const code=(e as any)?.code;if(code==='23505')return fail('Your account has already voted in this category.',409);if(votesLock(e))return fail('This entry is no longer available in that category.',409);throw e}
 return json({ok:true});
 }
 if(!await isAdmin())return fail('Organizer login required.',403);
@@ -38,10 +40,10 @@ const e=body.entry||{};for(const [key,max] of [['name',80],['costume',100],['des
 if(!categories.includes(e.category))return fail('Choose a category.');
 if(typeof e.image!=='string'||!(/^[a-f0-9-]{36}$/.test(e.image)||/^sample:[0-5]$/.test(e.image)))return fail('Upload and review an image first.');
 if(!e.image.startsWith('sample:')&&!await bucket().head(e.image))return fail('Uploaded image was not found. Please upload again.');
-const id=e.id||crypto.randomUUID();await db.prepare("INSERT INTO entries(id,name,costume,category,description,tagline,image,published) SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM event WHERE state='closed') ON CONFLICT(id) DO UPDATE SET name=excluded.name,costume=excluded.costume,category=excluded.category,description=excluded.description,tagline=excluded.tagline,image=excluded.image,published=excluded.published WHERE NOT EXISTS(SELECT 1 FROM event WHERE state='closed')").bind(id,e.name.trim(),e.costume.trim(),e.category,e.description,e.tagline,e.image,e.published===true?1:0).run();return json({ok:true});
-}
-if(action==='removeSamples'){
-if(current==='closed')return fail('Results are finalized and the roster is locked.');await db.prepare("DELETE FROM entries WHERE sample=1 AND NOT EXISTS(SELECT 1 FROM event WHERE state='closed')").run();return json({ok:true});
+const id=e.id||crypto.randomUUID();
+// The composite foreign key on votes refuses a category change or unpublish while votes exist; a save that leaves both unchanged passes.
+try{await db.prepare("INSERT INTO entries(id,name,costume,category,description,tagline,image,published) SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM event WHERE state='closed') ON CONFLICT(id) DO UPDATE SET name=excluded.name,costume=excluded.costume,category=excluded.category,description=excluded.description,tagline=excluded.tagline,image=excluded.image,published=excluded.published WHERE NOT EXISTS(SELECT 1 FROM event WHERE state='closed')").bind(id,e.name.trim(),e.costume.trim(),e.category,e.description,e.tagline,e.image,e.published===true?1:0).run()}catch(err){if(votesLock(err))return fail('This contestant has votes, so its category and published status are locked.',409);throw err}
+return json({ok:true});
 }
 if(action==='open'){
 const list=await standings();if(categories.some(c=>!list.some((e:any)=>e.category===c)))return fail('Publish at least one entry in every category first.');

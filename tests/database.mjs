@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtempSync,readdirSync,rmSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,readdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {PGlite} from '@electric-sql/pglite';
@@ -18,7 +18,24 @@ try{
  await db.query("INSERT INTO event(id,state) VALUES(1,'open') ON CONFLICT(id) DO UPDATE SET state='open' WHERE event.state IN ('draft','paused')");assert.equal((await db.query('SELECT state FROM event')).rows[0].state,'closed');
  const attempts=await Promise.all(Array.from({length:5},()=>db.query("INSERT INTO draws(category,winner,tied,time) VALUES('Most Creative/Original',$1,'[]','today') ON CONFLICT DO NOTHING",[crypto.randomUUID()])));assert.equal(attempts.reduce((n,x)=>n+x.affectedRows,0),1);
  assert.equal((await db.query('SELECT * FROM draws')).rows.length,1);
- console.log('PASS: PostgreSQL migration, voting window, concurrent duplicate-vote rejection, finalized-state lock, permanent concurrent tie draw, migration loader.');
+ // C1: the composite foreign key locks a voted entry's category and published state and refuses mismatched votes.
+ // ON UPDATE/DELETE RESTRICT reports 23001 (restrict_violation); the single-column entry reference reports 23503. The route maps both to 409.
+ const sqlstate=async promise=>{try{await promise;return null}catch(e){return e.code}};
+ const locked=async promise=>{const code=await sqlstate(promise);assert.ok(code==='23001'||code==='23503',`expected a foreign-key violation, got ${code}`)};
+ await locked(db.query("UPDATE entries SET category='Funniest' WHERE id='one'"));
+ await locked(db.query("UPDATE entries SET published=0 WHERE id='one'"));
+ await locked(db.query("DELETE FROM entries WHERE id='one'"));
+ assert.equal(await sqlstate(db.query("UPDATE entries SET name='Renamed',description='edited' WHERE id='one'")),null);
+ assert.equal(await sqlstate(db.query("INSERT INTO codes(hash,created) VALUES('other','today')")),null);
+ assert.equal(await sqlstate(db.query("INSERT INTO votes(id,code,category,entry) VALUES($1,'other','Funniest','one')",[crypto.randomUUID()])),'23503');
+ assert.equal(await sqlstate(db.query("INSERT INTO votes(id,code,category,entry) VALUES($1,'other','Most Creative/Original','missing')",[crypto.randomUUID()])),'23503');
+ assert.equal(await sqlstate(db.query("INSERT INTO votes(id,code,category,entry,published) VALUES($1,'other','Most Creative/Original','one',0)",[crypto.randomUUID()])),'23514');
+ assert.equal((await db.query("SELECT CAST(COUNT(*) AS INTEGER) AS n FROM votes WHERE entry='one'")).rows[0].n,1);
+ assert.equal(await sqlstate(db.query("INSERT INTO entries(id,name,costume,category,image,published) VALUES('unvoted','Free','Ghost','Funniest','photo',1)")),null);
+ assert.equal(await sqlstate(db.query("UPDATE entries SET category='Most Creative/Original',published=0 WHERE id='unvoted'")),null);
+ assert.equal(await sqlstate(db.exec(readFileSync('supabase/migrations/202610070001_contest.sql','utf8'))),null);
+ assert.equal(await sqlstate(db.query("SELECT sample FROM entries")),'42703');
+ console.log('PASS: PostgreSQL migration, voting window, concurrent duplicate-vote rejection, finalized-state lock, permanent concurrent tie draw, migration loader, composite vote key locks category/published/delete of voted entries and refuses mismatched votes, migration re-apply is idempotent.');
 }finally{await db.close()}
 const expected=readdirSync('supabase/migrations').filter(name=>name.endsWith('.sql')).sort();
 const dir=mkdtempSync(path.join(tmpdir(),'boo-migrations-'));
