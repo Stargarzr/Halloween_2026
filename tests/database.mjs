@@ -65,3 +65,34 @@ try{
  }finally{await racing.close()}
  console.log('PASS: migration unit is atomic with its ledger row, failed migrations retry after a fix, concurrent loaders apply each migration once.');
 }finally{rmSync(scratch,{recursive:true,force:true})}
+{
+ // C6: TLS policy for the hosted pool (Performance 4) and the transaction helper's release discipline (Performance 5).
+ const {poolConfig,runTransaction}=await import('../lib/pool.ts');
+ const url='postgres://user:secret@db.example:6543/postgres';
+ assert.deepEqual(poolConfig({DATABASE_URL:url}).ssl,{rejectUnauthorized:true});
+ assert.deepEqual(poolConfig({DATABASE_URL:url,SUPABASE_CA_CERT:'-----BEGIN CERTIFICATE-----\n'}).ssl,{ca:'-----BEGIN CERTIFICATE-----'});
+ assert.deepEqual(poolConfig({DATABASE_URL:url+'?sslmode=require'}).ssl,{rejectUnauthorized:true});
+ assert.throws(()=>poolConfig({DATABASE_URL:url+'?sslmode=require',SUPABASE_CA_CERT:'CERT'}),/must not contain sslmode/);
+ assert.throws(()=>poolConfig({DATABASE_URL:url+'?application_name=x&sslnegotiation=direct',SUPABASE_CA_CERT:'CERT'}),/must not contain sslnegotiation/);
+ assert.throws(()=>poolConfig({DATABASE_URL:url+'?%73slmode=require',SUPABASE_CA_CERT:'CERT'}),/must not contain sslmode/);
+ assert.throws(()=>poolConfig({DATABASE_URL:url+'?ssl=true',SUPABASE_CA_CERT:'CERT'}),/must not contain ssl /);
+ // Percent-encoded parameter names decode before pg merges them, so they must be refused too (C6 review round 1).
+ for(const bad of ['sslmode=disable','sslmode=no-verify','sslmode=prefer','sslmode=allow','SSLMODE=disable','uselibpqcompat=true&sslmode=require','ssl=true','ssl=1','sslrootcert=/tmp/ca.pem','sslnegotiation=direct','%73slmode=disable','s%73lmode=no-verify','%75selibpqcompat=true&%73slmode=require','sslmode=requir%65&%73sl=0']){assert.throws(()=>poolConfig({DATABASE_URL:url+'?'+bad}),undefined,bad);assert.throws(()=>poolConfig({DATABASE_URL:url+'?'+bad,SUPABASE_CA_CERT:'CERT'}),undefined,bad+' with CA')}
+ assert.deepEqual(poolConfig({DATABASE_URL:url+'?application_name=boo#sslmode=disable'}).ssl,{rejectUnauthorized:true});
+ assert.deepEqual(poolConfig({DATABASE_URL:url+'?application_name=boo#sslmode=disable',SUPABASE_CA_CERT:'CERT'}).ssl,{ca:'CERT'});
+ // The effective parameters pg derives keep verification on.
+ const {Client}=await import('pg');
+ for(const env of [{DATABASE_URL:url},{DATABASE_URL:url+'?sslmode=require'},{DATABASE_URL:url,SUPABASE_CA_CERT:'CERT'}]){const ssl=new Client(poolConfig(env)).connectionParameters.ssl;assert.ok(ssl&&typeof ssl==='object'&&ssl.rejectUnauthorized!==false,JSON.stringify(env));if(env.SUPABASE_CA_CERT)assert.equal(ssl.ca,'CERT')}
+ assert.throws(()=>poolConfig({}),/DATABASE_URL/);
+ for(const relative of ['db?host=db.example&sslmode=prefer','/var/run/postgresql?sslmode=disable','db.example:5432/db','socket:/tmp?db=x'])assert.throws(()=>poolConfig({DATABASE_URL:relative}),/absolute postgres/,relative);
+ assert.deepEqual(poolConfig({DATABASE_URL:'postgresql://user:secret@db.example:6543/postgres'}).ssl,{rejectUnauthorized:true});
+ const config=poolConfig({DATABASE_URL:url});
+ assert.equal(config.statement_timeout,10000);assert.equal(config.allowExitOnIdle,true);assert.equal(config.max,3);assert.equal(config.connectionString,url);
+ const stub=failOn=>{const calls=[],releases=[];return {calls,releases,client:{query:async sql=>{calls.push(sql);if(failOn?.(sql))throw Error('boom '+sql)},release:(...args)=>{releases.push(args)}}}};
+ let s=stub();assert.equal(await runTransaction(s.client,async q=>{await q('SELECT 1');return 7}),7);assert.deepEqual(s.calls,['BEGIN','SELECT 1','COMMIT']);assert.deepEqual(s.releases,[[]]);
+ s=stub(sql=>sql==='SELECT bad');await assert.rejects(runTransaction(s.client,q=>q('SELECT bad')),/boom SELECT bad/);assert.deepEqual(s.calls,['BEGIN','SELECT bad','ROLLBACK']);assert.deepEqual(s.releases,[[]]);
+ s=stub(sql=>sql==='SELECT bad'||sql==='ROLLBACK');await assert.rejects(runTransaction(s.client,q=>q('SELECT bad')),/boom SELECT bad/);assert.equal(s.releases.length,1);assert.ok(s.releases[0][0] instanceof Error);assert.match(s.releases[0][0].message,/boom ROLLBACK/);
+ s=stub(sql=>sql==='COMMIT');await assert.rejects(runTransaction(s.client,q=>q('SELECT 1')),/boom COMMIT/);assert.deepEqual(s.calls,['BEGIN','SELECT 1','COMMIT','ROLLBACK']);assert.deepEqual(s.releases,[[]]);
+ s=stub(sql=>sql==='BEGIN');await assert.rejects(runTransaction(s.client,q=>q('SELECT 1')),/boom BEGIN/);assert.deepEqual(s.releases,[[]]);
+ console.log('PASS: pool TLS policy (explicit ssl, CA from environment, sslmode conflicts refused), transaction helper releases exactly once and destroys a client whose rollback failed.');
+}
