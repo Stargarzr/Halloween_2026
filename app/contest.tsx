@@ -87,8 +87,10 @@ track?.addEventListener('ended',()=>{listCameras();fail('The camera was disconne
 track?.addEventListener('mute',()=>{if(cancelled||failed)return;setReady(false);setCountdown(0);clearTimeout(muteTimer.current);muteTimer.current=setTimeout(()=>{if(track.muted)fail('The camera stopped sending a picture. It may be paused by your device or in use by another app. Try again, or pick a different camera.')},5000)});
 track?.addEventListener('unmute',()=>{if(cancelled||failed)return;clearTimeout(muteTimer.current);if(live())setReady(true)});
 // A camera that another app holds can yield a live track with no frames (seen in Firefox on Windows), and play() then never settles, so arm the watchdog before awaiting playback.
+// Slow USB, Continuity, and virtual cameras can take a while to deliver a first frame: the check waits 12 s, and if the element has at least received metadata by then it waits another 12 s before giving up.
+const check=(extended:boolean)=>{if(cancelled||failed||live())return;if(!extended&&element&&element.readyState>=1){watchdog.current=setTimeout(()=>check(true),12000);return}fail('The camera started but is not sending a picture. It may be in use by another app. Close that app, then try again or pick a different camera.')};
 clearTimeout(watchdog.current);
-watchdog.current=setTimeout(()=>{if(!live())fail('The camera started but is not sending a picture. It may be in use by another app. Close that app, then try again or pick a different camera.')},8000);
+watchdog.current=setTimeout(()=>check(false),12000);
 if(element){element.srcObject=media;try{await element.play()}catch{fail('The camera preview could not start in this browser.');return}}
 if(cancelled||failed)return;
 listCameras();
@@ -122,7 +124,9 @@ return()=>clearTimeout(timer);
 },[countdown,disabled,capturing]);
 function switchCamera(){
 const current=stream.current?.getVideoTracks()[0]?.getSettings().deviceId||deviceId;
-const next=devices[(devices.findIndex(device=>device.deviceId===current)+1)%devices.length];
+// Browsers list the default camera first, so when the active track does not report its id, treat the default stream as the first entry and advance from there.
+const index=Math.max(0,devices.findIndex(device=>device.deviceId===current));
+const next=devices[(index+1)%devices.length];
 if(next&&next.deviceId!==current){clearTimers();stopStream();setReady(false);setCountdown(0);setError('');setDeviceId(next.deviceId)}
 }
 function retry(){encode.current++;clearTimers();stopStream();setCapturing(false);setReady(false);setCountdown(0);setError('');setDeviceId('');setAttempt(count=>count+1)}
