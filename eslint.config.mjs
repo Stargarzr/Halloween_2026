@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     ".next-*/**",
     ".claude/**",
     "*.wt/**",
+    ".netlify/**",
   ]),
   {rules:{"@typescript-eslint/no-explicit-any":"warn"}},
   {
