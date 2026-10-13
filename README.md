@@ -5,7 +5,8 @@ Private coworker costume voting, prepared for **Netlify + Supabase**. No hosted 
 ## What is ready
 
 - Standard Next.js app and Netlify build configuration.
-- PostgreSQL schema, unique account/category votes, saved tie draws, and private Supabase photo storage.
+- PostgreSQL schema, unique account/category votes, saved tie draws, and private photo storage in Cloudflare R2 (Supabase Storage when `R2_*` is not set).
+- Photos are uploaded when chosen so drafts and AI backgrounds work, and storage is kept tidy automatically: a replaced photo is removed on save unless another contestant uses it, and uploads never attached to a contestant are removed after an hour (`CONTEST_ORPHAN_AGE_MS` overrides the age; the HTTP test sets it to 0).
 - Email-code sign-in with server-verified Supabase users. Only exact `cgi.com` and `cgifederal.com` domains may enter; plus-tagged email aliases are rejected.
 - Four administrators: `teri.musick@cgi.com`, `zachary.sarver@cgi.com`, `heath.rasnake@cgi.com`, `morghan.scales@cgi.com`. Everyone else has viewing/voting access only.
 - Stable Supabase user IDs identify ballots across devices and email changes. This is one ballot per account, not proof that a person has only one company account.
@@ -30,13 +31,14 @@ Local data persists in ignored `.local-contest/` (PostgreSQL via PGlite and loca
    - `supabase/migrations/202610070003_auth_attempts.sql`
 
    These create empty contest tables and the `auth_attempts` sign-in limiter with row-level security, revoke browser database access, and create a **private** `costume-photos` bucket. The server accesses the database; there are intentionally no browser read/write policies.
-3. Add the variables from `.env.example` in the **Netlify UI**, scoped to **Functions and Builds**. In particular, set `SITE_URL` and, when needed, `SUPABASE_CA_CERT` there, **not in `netlify.toml`**. Redeploy after changing the variables.
+3. Add the variables from `.env.example` in the **Netlify UI** for the production context (all scopes; restricting scopes is a paid Netlify feature). In particular, set `SITE_URL` and, when needed, `SUPABASE_CA_CERT` there, **not in `netlify.toml`**. Redeploy after changing the variables.
    - `DATABASE_URL`: Supabase transaction-pooler PostgreSQL URL. Start with `sslmode=require`, then follow the TLS procedure below. Keep the database password secret.
    - `SUPABASE_URL`: your project URL.
    - `SUPABASE_PUBLISHABLE_KEY`: the project's publishable (or legacy anon) key.
    - `SITE_URL`: the final absolute HTTPS origin, for example `https://your-contest.netlify.app`, with no path, query, or fragment. Required for production email sign-in; the app uses it for `/auth/callback` and HTTPS security headers. Local preview may leave it unset.
    - `SUPABASE_CA_CERT`: the project's PEM CA certificate, only needed for the TLS fallback below. Preserve the full certificate and its line breaks.
    - `SUPABASE_SERVICE_ROLE_KEY`: server-only storage access. Never prefix this with `NEXT_PUBLIC_`.
+   - `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`: Cloudflare R2 photo storage (an R2 API token with Object Read & Write on the one bucket). When all four are set, photos go to R2, whose egress is free; without them the private Supabase bucket is used, which is capped at 5 GB of egress a month on the free plan.
    - `OPENAI_API_KEY`: optional, paid image generation; leave unset if unwanted or company policy prohibits sending photos to OpenAI.
 4. In Supabase Authentication, enable Email and require email confirmation. In **both Confirm signup and Magic Link email templates**, display `{{ .Token }}` so initial signups and returning users can enter a code. The app accepts six- to eight-digit codes. Set Supabase's Site URL to the same origin as `SITE_URL`, and add the exact `https://your-contest.netlify.app/auth/callback` URL to the redirect allowlist, substituting your actual domain. Disable unused login providers. If an email also includes a PKCE magic link, open it in the **same browser on the same device** that requested it; otherwise return to the original sign-in page and enter the email code.
 5. **Configure custom SMTP and raise Supabase auth rate limits before inviting coworkers.** Use a production sender, verify a sender domain you control, and test delivery to both company domains. Do not attempt to verify company DNS without authorization. In Authentication > Rate Limits, raise **`rate_limit_otp` and `rate_limit_verify`**, plus the email-send limit (`rate_limit_email_sent`) and your SMTP provider's quota, for the expected arrival burst. Budget at least three sends and three verification attempts per attendee in the arrival window: for 150 attendees arriving over five minutes, plan capacity for at least 450 of each in that window. Check each setting's displayed units and burst behavior, and test the configured capacity; a higher sustained limit alone does not guarantee a simultaneous burst succeeds. Supabase sees the Netlify server's shared egress IP, so its per-IP limits can affect everyone. See [Supabase rate limits](https://supabase.com/docs/guides/auth/rate-limits). The app separately allows three code requests and ten verification attempts per email per ten minutes. Account/sender setup is still pending.
@@ -46,7 +48,7 @@ Local data persists in ignored `.local-contest/` (PostgreSQL via PGlite and loca
 
 ### Verify database TLS from Netlify
 
-Try the real transaction-pooler `DATABASE_URL` with `sslmode=require` from a deployed Netlify function first. If the connection fails with a certificate error, download the CA certificate from the Supabase project's Database settings, **remove `sslmode` and any other `ssl*` parameters from `DATABASE_URL`**, and set `SUPABASE_CA_CERT` to the PEM certificate in the Netlify UI with **Functions and Builds** scopes. Redeploy and repeat the connection check. A URL SSL option can override the explicit CA configuration; the app rejects `sslmode` together with a configured CA. Never use `rejectUnauthorized:false` or `NODE_TLS_REJECT_UNAUTHORIZED=0` to bypass certificate verification.
+Try the real transaction-pooler `DATABASE_URL` with `sslmode=require` from a deployed Netlify function first. If the connection fails with a certificate error, download the CA certificate from the Supabase project's Database settings, **remove `sslmode` and any other `ssl*` parameters from `DATABASE_URL`**, and set `SUPABASE_CA_CERT` to the PEM certificate in the Netlify UI. Redeploy and repeat the connection check. A URL SSL option can override the explicit CA configuration; the app rejects `sslmode` together with a configured CA. Never use `rejectUnauthorized:false` or `NODE_TLS_REJECT_UNAUTHORIZED=0` to bypass certificate verification.
 
 No Active Directory, company SSO, or internal company systems are required. The domain rule admits any verified mailbox in the two allowed domains, not only a local-office roster.
 
@@ -65,7 +67,7 @@ Optional AI image generation sends the selected photo to **OpenAI for editing**.
 These checks require the actual hosted configuration; passing local tests is not deployment readiness. Exercise destructive checks with a test Supabase project before loading the live event.
 
 - [ ] All three migrations are applied; `public.auth_attempts` exists with RLS enabled and no `anon` or `authenticated` access.
-- [ ] Netlify UI variables include `SITE_URL` and the applicable TLS configuration, scoped to Functions and Builds; the real Netlify-to-database TLS connection succeeds with certificate verification enabled.
+- [ ] Netlify variables include `SITE_URL` and the applicable TLS configuration; the real Netlify-to-database TLS connection succeeds with certificate verification enabled.
 - [ ] Supabase and Netlify use nearby us-east regions; the redirect allowlist includes the exact `/auth/callback` URL and both email templates show `{{ .Token }}`.
 - [ ] Custom SMTP sends to both `cgi.com` and `cgifederal.com`; OTP, verify, email-send, and provider limits support expected attendance and retries. Test an arrival burst through the hosted app.
 - [ ] Each administrator signs in with the exact configured mailbox: `teri.musick@cgi.com`, `zachary.sarver@cgi.com`, `heath.rasnake@cgi.com`, and `morghan.scales@cgi.com`. Alternate mailboxes do not inherit admin access.

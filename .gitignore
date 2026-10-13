@@ -52,3 +52,6 @@ tsconfig.tsbuildinfo
 /.netlify/
 /.next-*/
 /tsconfig.test-*.json
+
+# supabase cli scratch
+/supabase/.temp/

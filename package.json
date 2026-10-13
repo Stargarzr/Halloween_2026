@@ -10,12 +10,13 @@
     "build": "next build --webpack",
     "start": "next start --hostname 127.0.0.1 --port 5173",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "test": "node --experimental-strip-types tests/auth.mjs && node --experimental-strip-types tests/database.mjs && node --experimental-strip-types tests/auth-routes.mjs",
+    "test": "node --experimental-strip-types tests/auth.mjs && node --experimental-strip-types tests/database.mjs && node --experimental-strip-types tests/auth-routes.mjs && node --experimental-strip-types tests/storage.mjs",
     "test:http": "node scripts/test-http.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.117.2",
+    "aws4fetch": "^1.0.20",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "lucide-react": "^1.31.0",

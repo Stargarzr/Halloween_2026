@@ -9,6 +9,13 @@ const fail=(message:string,status=400)=>json({error:message},status);
 const votesLock=(e:unknown)=>['23503','23001'].includes((e as any)?.code);
 // Transaction-scoped advisory lock keyed by image id, shared by save and delete, released at commit or rollback.
 const imageLock=(image:string)=>database().prepare('SELECT pg_advisory_xact_lock(hashtext(?))').bind(image);
+// Under the image-key lock that save also takes, re-check references and remove the photo only when none remain. Storage removal cannot be rolled back, so the transaction holds nothing but the lock and the check;
+// a save that wins the lock first leaves a reference and the photo stays, a save that waits finds the photo gone and returns "not found". Shared by entry delete, photo replacement and the orphan sweep.
+async function removeUnreferenced(key:string){if(!/^[a-f0-9-]{36}$/.test(key))return false;const db=database();return db.transaction(async run=>{await run(imageLock(key));if((await run(db.prepare('SELECT 1 FROM entries WHERE image=?').bind(key))).rows.length)return false;await bucket().delete(key);return true})}
+// Photos uploaded but never attached to a contestant (editor closed, photo swapped before saving) are removed once they are older than CONTEST_ORPHAN_AGE_MS (default one hour, so an upload still being edited is never touched).
+// Runs after save and delete, bounded per request, and only logs failures because the organizer's action has already succeeded.
+async function sweepOrphans(){try{const cutoff=Date.now()-Number(process.env.CONTEST_ORPHAN_AGE_MS??3600000);const stale=(await bucket().list()).filter(o=>/^[a-f0-9-]{36}$/.test(o.key)&&o.uploaded.getTime()<cutoff);if(!stale.length)return;
+const used=new Set((await database().prepare('SELECT image FROM entries').all()).results.map((r:any)=>r.image));let removed=0;for(const o of stale.filter(o=>!used.has(o.key)).slice(0,25))if(await removeUnreferenced(o.key))removed++;if(removed)console.log(`Removed ${removed} unused photo(s)`)}catch(e){console.error('Unused photo sweep failed',e)}}
 async function state(){return (await database().prepare('SELECT state FROM event WHERE id=1').first<{state:string}>())?.state||'draft'}
 // The event row is created by migration 0001 (and by applyLocalMigrations locally), so GET no longer runs an INSERT per poll.
 export async function GET(){try{
@@ -53,12 +60,16 @@ if(typeof e.image!=='string'||!(/^[a-f0-9-]{36}$/.test(e.image)||/^sample:[0-5]$
 const id=e.id||crypto.randomUUID();
 // The image key is locked for the whole save (existence check plus upsert) so a concurrent delete cannot remove the photo between the check and the insert; delete takes the same lock.
 // The composite foreign key on votes refuses a category change or unpublish while votes exist; a save that leaves both unchanged passes.
-try{const outcome=await db.transaction(async run=>{
+try{const {outcome,previous}=await db.transaction(async run=>{
 await run(imageLock(e.image));
-if(!e.image.startsWith('sample:')&&!await bucket().head(e.image))return 'missing';
+if(!e.image.startsWith('sample:')&&!await bucket().head(e.image))return {outcome:'missing',previous:''};
+const previous:string=(await run(db.prepare('SELECT image FROM entries WHERE id=?').bind(id))).rows[0]?.image||'';
 await run(db.prepare("INSERT INTO entries(id,name,costume,category,description,tagline,image,published) SELECT ?,?,?,?,?,?,?,? WHERE NOT EXISTS(SELECT 1 FROM event WHERE state='closed') ON CONFLICT(id) DO UPDATE SET name=excluded.name,costume=excluded.costume,category=excluded.category,description=excluded.description,tagline=excluded.tagline,image=excluded.image,published=excluded.published WHERE NOT EXISTS(SELECT 1 FROM event WHERE state='closed')").bind(id,e.name.trim(),e.costume.trim(),e.category,e.description,e.tagline,e.image,e.published===true||e.published===1?1:0));
-return 'saved'});
-if(outcome==='missing')return fail('Uploaded image was not found. Please upload again.')}catch(err){if(votesLock(err))return fail('This contestant has votes, so its category and published status are locked.',409);throw err}
+return {outcome:'saved',previous}});
+if(outcome==='missing')return fail('Uploaded image was not found. Please upload again.');
+// A replaced photo is removed after the commit unless another contestant still uses it.
+if(previous&&previous!==e.image){try{await removeUnreferenced(previous)}catch(storageError){console.error('Replaced photo removal failed',id,previous,storageError)}}}catch(err){if(votesLock(err))return fail('This contestant has votes, so its category and published status are locked.',409);throw err}
+await sweepOrphans();
 return json({ok:true});
 }
 if(action==='delete'){
@@ -67,9 +78,9 @@ if(typeof body.id!=='string')return fail('Choose a contestant to delete.');
 const row=await db.prepare('SELECT image FROM entries WHERE id=?').bind(body.id).first<{image:string}>();if(!row)return fail('Contestant not found.',404);
 // Step 1 commits the row deletion on its own. The votes foreign key refuses it while votes exist; the NOT EXISTS guard covers a finalize that lands between the state read and the delete.
 try{const r=await db.prepare("DELETE FROM entries WHERE id=? AND NOT EXISTS(SELECT 1 FROM event WHERE state='closed')").bind(body.id).run();if(!r.meta.changes)return fail('Results are finalized and the roster is locked.',409)}catch(err){if(votesLock(err))return fail('This contestant has votes and cannot be deleted. Pause voting and reset the round first.',409);throw err}
-// Step 2, after the commit: under the image-key lock that save also takes, re-check references and remove the photo only when none remain. Storage removal cannot be rolled back, so it never runs inside a transaction that might still fail;
-// a save that wins the lock first leaves a reference and the photo stays, a save that waits finds the photo gone and returns "not found". Failures here are logged: the row is already gone.
-if(/^[a-f0-9-]{36}$/.test(row.image)){try{await db.transaction(async run=>{await run(imageLock(row.image));if((await run(db.prepare('SELECT 1 FROM entries WHERE image=?').bind(row.image))).rows.length)return;await bucket().delete(row.image)})}catch(storageError){console.error('Photo removal failed after deleting entry',body.id,row.image,storageError)}}
+// Step 2, after the commit: remove the photo unless another contestant still uses it. Failures here are logged: the row is already gone.
+try{await removeUnreferenced(row.image)}catch(storageError){console.error('Photo removal failed after deleting entry',body.id,row.image,storageError)}
+await sweepOrphans();
 return json({ok:true});
 }
 if(action==='open'){
