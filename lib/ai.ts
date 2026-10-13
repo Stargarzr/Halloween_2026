@@ -67,9 +67,14 @@ async function openai(key:string,photo:Uint8Array,contentType:string,category:st
 }
 async function google(key:string,photo:Uint8Array,contentType:string,category:string,costume:string,name:string,taglines:boolean,clock:Clock):Promise<Generated>{
  const s=settings();const prompt=taglines?`${backgroundPrompt(category)}\n\nReturn the edited image. Also, as text, ${taglinePrompt(costume,category).replace(/^Write/,'write')}`:backgroundPrompt(category);
- const result=await call(`${s.googleBase}/v1beta/models/${s.google}:generateContent`,{method:'POST',headers:{'x-goog-api-key':key,'Content-Type':'application/json'},body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt},{inlineData:{mimeType:contentType,data:base64(photo)}}]}],generationConfig:{responseModalities:taglines?['TEXT','IMAGE']:['IMAGE']}})},IMAGE_TIMEOUT,clock,'Image generation');
- const candidate=result?.candidates?.[0];const parts:any[]=candidate?.content?.parts||[];const image=parts.find(p=>p?.inlineData?.data);
- if(!image){console.error('Gemini returned no image',candidate?.finishReason,result?.promptFeedback?.blockReason);throw new AiError('No image returned. Please try again.',502)}
+ // About one reply in ten is a normal STOP finish carrying only the tagline text and no image (2 of 22 measured live); it arrives in about 1.5 s, so one retry fits the budget. A safety or prohibited-content finish, or a budget too short for another image call, is not retried.
+ let result:any,candidate:any,parts:any[]=[],image:any;
+ for(let attempt=1;;attempt++){
+  result=await call(`${s.googleBase}/v1beta/models/${s.google}:generateContent`,{method:'POST',headers:{'x-goog-api-key':key,'Content-Type':'application/json'},body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt},{inlineData:{mimeType:contentType,data:base64(photo)}}]}],generationConfig:{responseModalities:taglines?['TEXT','IMAGE']:['IMAGE']}})},IMAGE_TIMEOUT,clock,'Image generation');
+  candidate=result?.candidates?.[0];parts=candidate?.content?.parts||[];image=parts.find(p=>p?.inlineData?.data);if(image)break;
+  if(attempt<2&&String(candidate?.finishReason||'').toUpperCase()==='STOP'&&clock.remaining()-RESERVE>10000){console.warn('Gemini returned no image on a STOP finish; retrying once');continue}
+  console.error('Gemini returned no image',candidate?.finishReason,result?.promptFeedback?.blockReason);throw new AiError('No image returned. Please try again.',502)
+ }
  // A non-STOP finish, a prompt block, or any flagged rating drops the suggestion while the image is still returned for the organizer to judge.
  let tagline:string|undefined;if(taglines){tagline=cleanTagline(parts.filter(p=>typeof p?.text==='string').map(p=>p.text).join('\n'));const why=tagline?taglinePolicy(tagline,name):null;if(tagline&&(why||!geminiSafe(result,candidate))){console.warn(`Tagline suggestion dropped: ${why||`safety (finish ${candidate?.finishReason||'missing'}, prompt block ${result?.promptFeedback?.blockReason||'none'}, ratings ${Array.isArray(candidate?.safetyRatings)?candidate.safetyRatings.map((r:any)=>`${r?.category}=${r?.probability}${r?.blocked?'!':''}`).join(' ')||'empty':'missing'})`}`);tagline=undefined}}
  return {image:fromBase64(image.inlineData.data),contentType:image.inlineData.mimeType||'image/png',tagline};
