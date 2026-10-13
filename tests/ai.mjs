@@ -67,11 +67,11 @@ reply=route({'/v1/responses':()=>okText('Tagline: x'),'/v1/moderations':()=>okMo
 // AbortSignal.timeout's timer is unref'd in Node, so the stalled fetch holds a referenced timer to keep the loop alive until the abort fires.
 const realFetch=globalThis.fetch;globalThis.fetch=(input,init)=>new Promise((_,reject)=>{const keep=setTimeout(()=>reject(Error('abort never fired')),3000);init.signal.addEventListener('abort',()=>{clearTimeout(keep);reject(init.signal.reason)})});
 process.env.AI_TAGLINES='false';const t0=Date.now();
-{const originalTimeout=AbortSignal.timeout;AbortSignal.timeout=ms=>{assert.ok(ms<=42000&&ms>0,`image timeout within budget (${ms})`);return originalTimeout.call(AbortSignal,50)};try{await assert.rejects(generateBackground(photo),e=>e instanceof AiError&&e.status===504&&/took too long/.test(e.message))}finally{AbortSignal.timeout=originalTimeout}}
+{const originalTimeout=AbortSignal.timeout;AbortSignal.timeout=ms=>{assert.ok(ms<=22000&&ms>0,`image timeout within budget (${ms})`);return originalTimeout.call(AbortSignal,50)};try{await assert.rejects(generateBackground(photo),e=>e instanceof AiError&&e.status===504&&/took too long/.test(e.message))}finally{AbortSignal.timeout=originalTimeout}}
 assert.ok(Date.now()-t0<5000);
-// The route passes its entry time: 30 s already spent leaves 48 − 30 − 6 = 12 s for the image call; 45 s spent leaves nothing and is a 504 without any call.
-{const originalTimeout=AbortSignal.timeout;let seen=0;AbortSignal.timeout=ms=>{seen=ms;return originalTimeout.call(AbortSignal,50)};try{await assert.rejects(generateBackground(photo,Date.now()-30000),e=>e.status===504);assert.ok(seen>11000&&seen<=12000,`budget shrinks with elapsed time (${seen})`)}finally{AbortSignal.timeout=originalTimeout}}
-requests.length=0;await assert.rejects(generateBackground(photo,Date.now()-45000),e=>e instanceof AiError&&e.status===504);assert.equal(requests.length,0,'exhausted budget never calls the vendor');
+// The route passes its entry time: 15 s already spent leaves 26 − 15 − 4 = 7 s for the image call; 25 s spent leaves nothing and is a 504 without any call.
+{const originalTimeout=AbortSignal.timeout;let seen=0;AbortSignal.timeout=ms=>{seen=ms;return originalTimeout.call(AbortSignal,50)};try{await assert.rejects(generateBackground(photo,Date.now()-15000),e=>e.status===504);assert.ok(seen>6000&&seen<=7000,`budget shrinks with elapsed time (${seen})`)}finally{AbortSignal.timeout=originalTimeout}}
+requests.length=0;await assert.rejects(generateBackground(photo,Date.now()-25000),e=>e instanceof AiError&&e.status===504);assert.equal(requests.length,0,'exhausted budget never calls the vendor');
 globalThis.fetch=realFetch;
 // Google: a single generateContent call carries the photo inline; with taglines it asks for TEXT and IMAGE and reads both parts (labelled line wins over chatter), without it IMAGE only and the text is ignored.
 for(const k of ['AI_VENDOR','OPENAI_API_KEY'])delete process.env[k];Object.assign(process.env,{AI_VENDOR:'google',GEMINI_API_KEY:'g-test',AI_TAGLINES:'true'});requests.length=0;
