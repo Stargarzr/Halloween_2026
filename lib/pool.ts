@@ -25,7 +25,10 @@ export function poolConfig(env:Record<string,string|undefined>):PoolConfig{
   if(key!=='sslmode')throw Error(`DATABASE_URL parameter ${key} is not supported; configure TLS through SUPABASE_CA_CERT.`);
   if(!safeModes.has(value))throw Error(`DATABASE_URL sslmode=${value} is not allowed; TLS verification is mandatory.`);
  }
- const config:PoolConfig={connectionString,ssl:ca?{ca}:{rejectUnauthorized:true},max:3,idleTimeoutMillis:10000,connectionTimeoutMillis:10000,statement_timeout:10000,allowExitOnIdle:true};
+ // Every wait on the database is bounded well under Netlify's 60 s function limit, so a stalled query answers with a JSON error instead of a platform page.
+ // statement_timeout, lock_timeout (advisory image locks) and idle_in_transaction_session_timeout are startup parameters the server enforces; Supabase's transaction pooler may not forward
+ // them, so query_timeout, which node-postgres enforces on the client, is the guarantee: 15 s per query, 10 s to obtain a connection.
+ const config:PoolConfig={connectionString,ssl:ca?{ca}:{rejectUnauthorized:true},max:3,idleTimeoutMillis:10000,connectionTimeoutMillis:10000,statement_timeout:10000,lock_timeout:10000,idle_in_transaction_session_timeout:15000,query_timeout:15000,allowExitOnIdle:true};
  // What pg will actually use: the parsed URL merged over the options above. Constructing a Client opens nothing.
  let effective:unknown;
  // connectionParameters is a real pg.Client field that @types/pg does not declare.

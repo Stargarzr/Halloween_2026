@@ -25,12 +25,14 @@ if(args.help){console.log(`Usage: node scripts/deploy-setup.mjs [options]
   --verify-limit <n>       Supabase rate_limit_verify (default 600)
   --test-email <addr>      After deploy, request a real sign-in code for this eligible address (proves SMTP end to end)
   --allow-default-sender   Deploy to production without custom SMTP (testing only: 2 emails/hour, org members only)
+  --ai-vendor <openai|google> Enable AI backgrounds with that vendor (needs OPENAI_API_KEY or GEMINI_API_KEY in the environment); omit to disable
+  --ai-taglines            Also suggest a tagline with each generated background (default off)
   --r2-account <id>        Cloudflare account id for R2 photo storage (or R2_ACCOUNT_ID)
   --r2-bucket <name>       R2 bucket for photos (or R2_BUCKET); credentials come from R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY
                            or the macOS Keychain (account <bucket>, services r2-access-key-id and r2-secret-access-key)
   --skip-deploy            Configure everything but do not build/deploy
   --dry-run                Print the plan, change nothing
-Environment (optional): SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD, OPENAI_API_KEY,
+Environment (optional): SUPABASE_ACCESS_TOKEN, SUPABASE_DB_PASSWORD, OPENAI_API_KEY, GEMINI_API_KEY,
   SMTP_HOST SMTP_PORT SMTP_USER SMTP_PASS SMTP_SENDER_EMAIL SMTP_SENDER_NAME (custom SMTP; raises the email-send limit)
   SMTP_EMAIL_LIMIT (Supabase emails per hour with custom SMTP, default 600)
   R2_ACCOUNT_ID R2_BUCKET R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY (Cloudflare R2 photo storage; without it photos use Supabase Storage, 5 GB egress/month on the free plan)`);process.exit(0)}
@@ -63,6 +65,10 @@ log(`  migrations: ${migrations.join(', ')}`);
 if(!/^https:\/\/[^/]+$/.test(args['site-url']||'https://x')&&args['site-url'])fail('--site-url must be an absolute https origin with no path');
 if(!process.env.SMTP_HOST&&!args['allow-default-sender']&&!args['skip-deploy']&&!dryRun)fail('No custom SMTP configured (SMTP_* variables). Supabase\'s default sender delivers 2 emails/hour to organization members only, so coworkers could not sign in. Set SMTP_* or pass --allow-default-sender for a test deployment.');
 if(args['test-email']&&!/^[^\s@+]+@(cgi\.com|cgifederal\.com)$/i.test(args['test-email']))fail('--test-email must be a cgi.com or cgifederal.com address without a + tag (the app rejects anything else)');
+// AI is off unless a vendor is named; the vendor's key must be present so a deploy never advertises a feature that fails on first click.
+const aiVendor=String(args['ai-vendor']||'').toLowerCase();if(aiVendor&&!['openai','google'].includes(aiVendor))fail('--ai-vendor must be openai or google');
+if(aiVendor==='openai'&&!process.env.OPENAI_API_KEY)fail('--ai-vendor openai needs OPENAI_API_KEY in the environment');if(aiVendor==='google'&&!process.env.GEMINI_API_KEY)fail('--ai-vendor google needs GEMINI_API_KEY in the environment');
+if(args['ai-taglines']&&!aiVendor)fail('--ai-taglines needs --ai-vendor');
 // Photo storage: R2 when the account, bucket and credentials are all present. Credentials are read from the environment or the Keychain and never printed.
 const r2Account=String(args['r2-account']||process.env.R2_ACCOUNT_ID||''),r2Bucket=String(args['r2-bucket']||process.env.R2_BUCKET||'');
 const r2KeyId=process.env.R2_ACCESS_KEY_ID||(r2Bucket?keychain(r2Bucket,'r2-access-key-id'):''),r2Secret=process.env.R2_SECRET_ACCESS_KEY||(r2Bucket?keychain(r2Bucket,'r2-secret-access-key'):'');
@@ -154,7 +160,9 @@ else log(`  would set site_url ${SITE_URL}, allowlist, limits ${otpLimit}/${veri
 // ---------- 8. Netlify environment ----------
 log('▸ Netlify environment (production context, all scopes: scoped variables need a paid Netlify plan)');
 const vars=[['SUPABASE_URL',`https://${ref}.supabase.co`,false],['SUPABASE_PUBLISHABLE_KEY',publishable,false],['SUPABASE_SERVICE_ROLE_KEY',secret,true],['DATABASE_URL',databaseUrl,true],['SUPABASE_CA_CERT',ca,false],['SITE_URL',SITE_URL,false]];
-if(process.env.OPENAI_API_KEY)vars.push(['OPENAI_API_KEY',process.env.OPENAI_API_KEY,true]);
+if(process.env.OPENAI_API_KEY)vars.push(['OPENAI_API_KEY',process.env.OPENAI_API_KEY,true]);if(process.env.GEMINI_API_KEY)vars.push(['GEMINI_API_KEY',process.env.GEMINI_API_KEY,true]);
+// Always written so the script is the source of truth: an empty AI_VENDOR disables AI editing on the next deploy.
+vars.push(['AI_VENDOR',aiVendor,false],['AI_TAGLINES',args['ai-taglines']?'true':'false',false]);
 if(r2)vars.push(['R2_ACCOUNT_ID',r2Account,false],['R2_BUCKET',r2Bucket,false],['R2_ACCESS_KEY_ID',r2KeyId,true],['R2_SECRET_ACCESS_KEY',r2Secret,true]);
 // The CLI's env:set fails silently on this plan when --scope is given, so the variables go through the API and are verified afterwards.
 if(dryRun){for(const [k,,isSecret] of vars)log(`  would set ${k}${isSecret?' (secret)':''}`)}
@@ -193,5 +201,6 @@ log(`\n✔ Done.
   Supabase:   https://supabase.com/dashboard/project/${ref}
   Netlify:    ${siteId}
   Photos:     ${r2?`Cloudflare R2 bucket ${r2Bucket}`:'Supabase Storage (costume-photos)'}
+  AI:         ${aiVendor?`${aiVendor} backgrounds${args['ai-taglines']?' with tagline suggestions':''}`:'off (presets only)'}
 Still manual: ${smtp?'nothing for email':'custom SMTP (set SMTP_* and re-run, or configure in the Supabase dashboard)'}${customHost!==new URL(siteUrl).host?'':'; a custom domain if wanted (--site-url plus a CNAME)'}.
 Tear down:   netlify sites:delete ${siteId} --force   and   supabase projects delete ${ref}`);

@@ -2,6 +2,7 @@ import {sameOrigin} from '@/lib/auth-request';
 import { getMember, signOutPath } from '@/lib/auth';
 import { database, bucket, hash, randomIndex, standings } from '@/lib/server';
 import {categories} from '@/lib/shared';
+import {aiConfig,generateBackground,vendorLabel,AiError} from '@/lib/ai';
 export const dynamic='force-dynamic';
 const json=(data:any,status=200)=>Response.json(data,{status,headers:{'Cache-Control':'no-store'}});
 const fail=(message:string,status=400)=>json({error:message},status);
@@ -26,9 +27,11 @@ const [s,rows,draws,roster]=await Promise.all([state(),standings(),db.prepare('S
 const reveal=admin||s==='closed';
 const visible=reveal?rows:rows.map((e:any)=>({...e,votes:null})).sort((a:any,b:any)=>a.category.localeCompare(b.category)||a.name.localeCompare(b.name));
 const entries=roster??[...visible].sort((a:any,b:any)=>a.name.localeCompare(b.name)).map((e:any)=>({...e,votes:undefined}));
-return json({state:s,admin,account:{email:member.email,localPreview:!!member.localPreview,signOut:signOutPath()},entries,standings:visible,draws,aiEnabled:admin&&!!process.env.OPENAI_API_KEY});
+return json({state:s,admin,account:{email:member.email,localPreview:!!member.localPreview,signOut:signOutPath()},entries,standings:visible,draws,aiEnabled:admin&&aiConfig().enabled,aiTaglines:admin&&aiConfig().taglines,aiVendor:admin&&aiConfig().enabled?vendorLabel[aiConfig().vendor!]:null});
 }catch(e){console.error(e);return fail('Contest storage is temporarily unavailable. Please try again.',503)}}
 export async function POST(req:Request){try{
+// Entry time for the AI generation budget: Netlify's 60 s limit counts from here, not from the vendor call.
+const startedAt=Date.now();
 const member=await getMember();if(!member)return fail('Sign in with your work email to access the contest.',401);
 if(!sameOrigin(req))return fail('Please use the contest website.',403);
 if(Number(req.headers.get('content-length')||0)>4.5*1024*1024)return fail('File is too large.',413);
@@ -98,14 +101,15 @@ const list=(await standings()).filter((e:any)=>e.category===body.category) as an
 const winner=tied[randomIndex(tied.length)];await db.prepare('INSERT INTO draws(category,winner,tied,time) VALUES(?,?,?,?) ON CONFLICT DO NOTHING').bind(body.category,winner.id,JSON.stringify(tied.map(e=>({id:e.id,name:e.name,votes:e.votes}))),new Date().toISOString()).run();return json({draw:await db.prepare('SELECT * FROM draws WHERE category=?').bind(body.category).first()});
 }
 if(action==='generate'){
-if(current==='closed')return fail('Results are finalized and the roster is locked.');const key=process.env.OPENAI_API_KEY;if(!key)return fail('AI images are not configured. Upload a finished image instead.');
+if(current==='closed')return fail('Results are finalized and the roster is locked.');if(!aiConfig().enabled)return fail('AI images are not configured. Upload a finished image instead.');
 if(typeof body.image!=='string'||!/^[a-f0-9-]{36}$/.test(body.image))return fail('Upload the original photo first.');
-const photo=await bucket().get(body.image);if(!photo)return fail('Original image not found.');
-const themes:Record<string,string>={'Best Team/Group Costume':'a neon-green machine resistance bunker with flickering jack-o-lantern command screens and a distant friendly robot assembly line','Most Creative/Original':'a phosphor-green AI invention lab with holographic pumpkins, candy-blueprint projections and cheerful malfunctioning terminals','Funniest':'a dark green robot breakroom with a candy-bucket conveyor, a slightly confused photocopier android and harmless system-error confetti'};const theme=themes[body.category]||'a neon-green machine resistance bunker with flickering jack-o-lantern command screens';const form=new FormData();form.set('model','gpt-image-2');form.set('image',new Blob([await photo.arrayBuffer()],{type:photo.httpMetadata?.contentType||'image/png'}),'photo.png');form.set('prompt',`Edit only the background into ${theme}, a funny tasteful post-apocalyptic Halloween office scene in the age of machines. Preserve every person, face, identity, pose, clothing, costume and prop as faithfully as possible. No text, logos, weapons, extra people, gore or frightening imagery.`);form.set('size','1024x1024');form.set('quality','low');
-// Netlify kills the function at 60 s; abort at 45 s so the user gets a JSON error instead of a platform page. gpt-image models always return b64_json, so no response_format.
-let result:any;try{const response=await fetch('https://api.openai.com/v1/images/edits',{method:'POST',headers:{Authorization:`Bearer ${key}`},body:form,signal:AbortSignal.timeout(45000)});if(!response.ok)return fail('Image generation did not complete. Try again or upload a finished image.',502);result=await response.json()}catch(fetchError){if((fetchError as any)?.name==='TimeoutError'||(fetchError as any)?.name==='AbortError')return fail('Image generation took too long. Try again later or upload a finished image.',504);throw fetchError}
-if(!result?.data?.[0]?.b64_json)return fail('No image returned. Please try again.',502);
-const id=crypto.randomUUID();await bucket().put(id,Uint8Array.from(atob(result.data[0].b64_json),c=>c.charCodeAt(0)),{httpMetadata:{contentType:'image/png'}});return json({image:id});
+if(body.costume!==undefined&&(typeof body.costume!=='string'||body.costume.length>100))return fail('Please check the costume field.');if(body.name!==undefined&&(typeof body.name!=='string'||body.name.length>80))return fail('Please check the name field.');
+// Storage calls cannot be aborted, so each is raced against the absolute deadline (58 s after handler entry, under Netlify's 60 s) and reports a 504 instead of a platform page; a write that lands late is an unreferenced object the sweep removes.
+const deadline=<T,>(work:Promise<T>,cap:number,message:string)=>{const left=Math.min(cap,58000-(Date.now()-startedAt));if(left<=0)return Promise.reject(new AiError(message,504));let timer:ReturnType<typeof setTimeout>;return Promise.race([work.finally(()=>clearTimeout(timer)),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new AiError(message,504)),left);timer.unref()})])};
+let photo;try{photo=await deadline(bucket().get(body.image),10000,'The original photo could not be read in time. Please try again.')}catch(e){if(e instanceof AiError)return fail(e.message,e.status);throw e}if(!photo)return fail('Original image not found.');
+// Vendor, prompts and the optional tagline live in lib/ai; an AiError carries the organizer-facing message and status (502 vendor failure, 504 timeout).
+let generated;try{generated=await generateBackground({photo:photo.body,contentType:photo.httpMetadata?.contentType||'image/png',category:body.category,costume:body.costume,name:body.name},startedAt)}catch(aiError){if(aiError instanceof AiError)return fail(aiError.message,aiError.status);throw aiError}
+const id=crypto.randomUUID();try{await deadline(bucket().put(id,generated.image,{httpMetadata:{contentType:generated.contentType}}),58000,'The generated image could not be stored in time. Please try again.')}catch(e){if(e instanceof AiError)return fail(e.message,e.status);throw e}return json({image:id,...(generated.tagline?{tagline:generated.tagline}:{})});
 }
 return fail('Unknown action.');
 }catch(e){console.error(e);return fail('The request could not be completed. Your changes have not been confirmed. Please try again.',500)}}

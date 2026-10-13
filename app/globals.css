@@ -53,3 +53,5 @@ body{background:radial-gradient(ellipse at 80% 0,#0a2817 0,transparent 42%),repe
 [data-slot=alert-dialog-action][data-destructive]:hover{background:#d12c49!important}
 button[data-destructive]:not([data-slot=alert-dialog-action]){border-color:#a83b50;background:#3a111b;color:#ffe8eb}
 button[data-destructive]:not([data-slot=alert-dialog-action]):hover{background:#591727}
+
+.ai-suggestion{display:flex;flex-direction:column;gap:10px;border:1px solid #254830;border-radius:9px;padding:12px;margin:4px 0}

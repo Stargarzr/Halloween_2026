@@ -40,14 +40,14 @@ At the end it prints the app URL, the dashboard links, and the teardown commands
 
 Supabase's default sender delivers only to members of your Supabase organization, at most 2 emails per hour, and the first hosted run found it would not accept template changes either, so the email carried only a link. The script therefore refuses a production deploy without `SMTP_*` variables unless you pass `--allow-default-sender` for a throwaway test.
 
-The live contest uses **Cloudflare Email Service** over authenticated SMTP, sending from `no-reply@booballot.zacksarver.dev`. The sending subdomain is onboarded in the zacksarver.dev zone (Cloudflare adds the SPF, DKIM, DMARC and bounce records itself) and the account quota is 1,000 emails per day on Workers Paid. The SMTP password is a Cloudflare API token with the single permission **Email Sending: Edit**, kept in the macOS Keychain, never in a file or in chat:
+The live contest uses **Cloudflare Email Service** over authenticated SMTP, sending from `no-reply@boo-ballot.zacksarver.dev`. The sending subdomain is onboarded in the zacksarver.dev zone (Cloudflare adds the SPF, DKIM, DMARC and bounce records itself) and the account quota is 1,000 emails per day on Workers Paid. The SMTP password is a Cloudflare API token with the single permission **Email Sending: Edit**, kept in the macOS Keychain, never in a file or in chat:
 
 ```bash
 security add-generic-password -a booballot -s booballot-smtp -w   # paste the token once
 SMTP_HOST=smtp.mx.cloudflare.net SMTP_PORT=465 SMTP_USER=api_token \
 SMTP_PASS="$(security find-generic-password -a booballot -s booballot-smtp -w)" \
-SMTP_SENDER_EMAIL=no-reply@booballot.zacksarver.dev SMTP_SENDER_NAME="Boo Ballot" SMTP_EMAIL_LIMIT=600 \
-node scripts/deploy-setup.mjs --name boo-ballot --site-url https://booballot.zacksarver.dev --test-email you@cgi.com
+SMTP_SENDER_EMAIL=no-reply@boo-ballot.zacksarver.dev SMTP_SENDER_NAME="Boo Ballot" SMTP_EMAIL_LIMIT=600 \
+node scripts/deploy-setup.mjs --name boo-ballot --site-url https://boo-ballot.zacksarver.dev --test-email you@cgi.com
 ```
 
 Any other SMTP provider works the same way; only the five `SMTP_*` values change. `--test-email` requests a real sign-in code for that address after the deploy, which proves Supabase can hand mail to the SMTP server; a 503 there means the server rejected it. Delivery into a Microsoft 365 inbox still has to be checked by a person: send one test code to a `cgi.com` and a `cgifederal.com` address afterwards. The templates contain **only the code, no link**: in the first production test CGI's mail scanner opened the link 9 seconds after delivery, which consumes the one-time token and invalidates the code in the same email. The `/auth/callback` route still exists but nothing links to it.
@@ -65,16 +65,28 @@ security add-generic-password -a boo-ballot-photos -s r2-access-key-id -w       
 security add-generic-password -a boo-ballot-photos -s r2-secret-access-key -w   # paste the Secret Access Key
 SMTP_HOST=smtp.mx.cloudflare.net SMTP_PORT=465 SMTP_USER=api_token \
 SMTP_PASS="$(security find-generic-password -a booballot -s booballot-smtp -w)" \
-SMTP_SENDER_EMAIL=no-reply@booballot.zacksarver.dev SMTP_SENDER_NAME="Boo Ballot" SMTP_EMAIL_LIMIT=600 \
+SMTP_SENDER_EMAIL=no-reply@boo-ballot.zacksarver.dev SMTP_SENDER_NAME="Boo Ballot" SMTP_EMAIL_LIMIT=600 \
 node scripts/deploy-setup.mjs --supabase-ref mrgcmqxkqjvbndqljxtu --netlify-site 60186a4a-7ef2-41ae-a8f6-b7ff43e8b8c3 \
-  --site-url https://booballot.zacksarver.dev --r2-account a552afac64b9829b0be26fa76cf8e556 --r2-bucket boo-ballot-photos
+  --site-url https://boo-ballot.zacksarver.dev --r2-account a552afac64b9829b0be26fa76cf8e556 --r2-bucket boo-ballot-photos
 ```
 
 The script signs a HEAD request for an impossible key before it changes anything: 404 proves the token and bucket, 403 means a wrong key or a token scoped to another bucket. Photos uploaded to Supabase Storage before the switch are not copied; re-upload them. Without `--r2-bucket` the script still deploys but warns about the Supabase egress cap.
 
+## AI backgrounds and taglines (optional)
+
+AI editing is off unless the deploy names a vendor: `--ai-vendor google` with `GEMINI_API_KEY` in the environment, or `--ai-vendor openai` with `OPENAI_API_KEY` (OpenAI's image models also need the organization verified in its dashboard, which takes about half an hour). Add `--ai-taglines` to have each generated background come back with a suggested tagline: Google returns image and text from a single call, OpenAI needs a second vision call that runs alongside the edit; its failure is non-fatal, but the response waits for both, so a slow tagline call can add up to 20 seconds to a finished image. Without `--ai-vendor` the script writes an empty `AI_VENDOR`, which keeps the feature off and the "Suggest a tagline" button on the presets. Keys are passed through the environment like the SMTP token, for example `GEMINI_API_KEY="$(security find-generic-password -a booballot -s gemini -w)"` after a one-time `security add-generic-password -a booballot -s gemini -w`.
+
+Every generation sends the contestant's photo to the vendor, so get consent from the people in it. The prompts are in `lib/ai.ts`.
+
+## "Powered by Netlify" badge
+
+Free-plan projects created after August 2026 get a badge injected at the edge (`/.netlify/scripts/hud`); it is not in the app code. It is a project setting, allowed on the Free plan, and needs no redeploy: Project configuration → General → Powered by Netlify badge, or `netlify api updateSite --data '{"site_id":"<site id>","body":{"built_with_badge_enabled":false}}'`. Turned off for the live site on 2026-10-13. Docs: https://docs.netlify.com/manage/projects/powered-by-netlify-badge/
+
 ## Custom domain
 
-`--site-url https://booballot.zacksarver.dev` makes the script set that hostname as the Netlify site's custom domain. DNS is a single unproxied CNAME in Cloudflare from `booballot.zacksarver.dev` to the site's `*.netlify.app` host; Netlify issues the certificate a few minutes after it resolves. The sending subdomain's own records live under `cf-bounce.booballot` and `_dmarc.booballot`, so they do not collide. Until the certificate is live, the script's live checks fall back to the `netlify.app` URL; re-run with `--skip-deploy --supabase-ref <ref> --netlify-site <site id> --test-email …` once the custom domain answers.
+The hostname was `booballot.zacksarver.dev` on the first day and was renamed to `boo-ballot.zacksarver.dev` on 2026-10-13 because the unhyphenated form can be misread. The rename touched: a new unproxied CNAME, the Netlify custom domain and certificate, the `SITE_URL` variable plus a redeploy, Supabase's site URL and redirect allowlist, and a new Email Service sending subdomain with the sender `no-reply@boo-ballot.zacksarver.dev`. The old hostname stays as a Netlify domain alias for a while so the first links keep working; the old sending subdomain can be deleted once the new sender has delivered to both company domains.
+
+`--site-url https://boo-ballot.zacksarver.dev` makes the script set that hostname as the Netlify site's custom domain. DNS is a single unproxied CNAME in Cloudflare from `boo-ballot.zacksarver.dev` to the site's `*.netlify.app` host; Netlify issues the certificate a few minutes after it resolves. The sending subdomain's own records live under `cf-bounce.boo-ballot` and `_dmarc.boo-ballot`, so they do not collide. Until the certificate is live, the script's live checks fall back to the `netlify.app` URL; re-run with `--skip-deploy --supabase-ref <ref> --netlify-site <site id> --test-email …` once the custom domain answers.
 
 ## Re-running and updating
 
@@ -94,7 +106,7 @@ supabase projects delete <ref>
 - Confirm the production environment has the four `R2_*` variables (Netlify UI → Site configuration → Environment variables) so photos are not quietly on Supabase Storage.
 - Free Supabase projects pause after 7 idle days. Open the dashboard the week of the event and confirm the project is active; resume it if not. Any sign-in attempt through the app keeps it active.
 - Check the Cloudflare Email Service dashboard for the day's quota and that the wedding sender is not also busy on the 31st; both share the 1,000 per day account limit.
-- Send a test code from the office network and confirm it arrives with the code visible and not in junk. Cloudflare's Email Sending activity log (or the `emailSendingAdaptive` GraphQL dataset) shows per-message delivered/failed status; "delivered" plus no email in the inbox means the corporate filter has it (junk or quarantine), so ask IT to allowlist `booballot.zacksarver.dev`.
+- Send a test code from the office network and confirm it arrives with the code visible and not in junk. Cloudflare's Email Sending activity log (or the `emailSendingAdaptive` GraphQL dataset) shows per-message delivered/failed status; "delivered" plus no email in the inbox means the corporate filter has it (junk or quarantine), so ask IT to allowlist `boo-ballot.zacksarver.dev`.
 
 ## Lessons from the first hosted run (October 2026)
 
@@ -110,3 +122,4 @@ supabase projects delete <ref>
 - Photo views are not CDN-cached (the response is private because it is gated by the session), so storage egress scales with voters × photos. Supabase free caps egress at 5 GB a month and the fair-use response is a project-wide 402, which is why photos moved to R2.
 - Netlify's Node sends a `Request` object's body as a stream, so passing aws4fetch's signed `Request` straight to `fetch` produces a chunked upload that R2 rejects with `411 MissingContentLength` (seen in the function log on the first R2 deploy). The storage module signs with `client.sign()` and then calls `fetch(url, {headers, body: bytes})` so Node sets `Content-Length` itself. A smoke test against the real bucket (`put`, `get`, `head`, duplicate `put` → 412, `delete`) is the quickest check after touching that module.
 - Storage hygiene lives in the contest API, not in a scheduler: every save and delete removes the replaced photo (if unreferenced) and sweeps up to 25 unattached objects older than an hour, so the bucket only ever holds photos the roster points at plus whatever is being edited right now.
+- Every wait is bounded under Netlify's 60 s function limit: database queries by node-postgres `query_timeout` (15 s, client-side, because Supabase's transaction pooler may not forward `statement_timeout`), advisory locks by `lock_timeout`, Supabase Auth calls by a 15 s fetch timeout, vendor AI calls by a 48 s budget from handler entry, and storage calls in the generate action by an absolute 58 s deadline. A stall therefore returns a JSON error the page can show instead of Netlify's timeout page.

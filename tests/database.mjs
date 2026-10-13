@@ -87,6 +87,8 @@ try{
  const {poolConfig,runTransaction}=await import('../lib/pool.ts');
  const url='postgres://user:secret@db.example:6543/postgres';
  assert.deepEqual(poolConfig({DATABASE_URL:url}).ssl,{rejectUnauthorized:true});
+ // Every database wait is bounded under Netlify's 60 s limit; query_timeout is the client-side guarantee when the pooler does not forward the server parameters.
+ {const c=poolConfig({DATABASE_URL:url});assert.deepEqual([c.connectionTimeoutMillis,c.statement_timeout,c.lock_timeout,c.idle_in_transaction_session_timeout,c.query_timeout],[10000,10000,10000,15000,15000]);assert.ok(Math.max(c.connectionTimeoutMillis,c.query_timeout)+c.query_timeout<60000,'connect plus two queries stay under the function limit')}
  assert.deepEqual(poolConfig({DATABASE_URL:url,SUPABASE_CA_CERT:'-----BEGIN CERTIFICATE-----\n'}).ssl,{ca:'-----BEGIN CERTIFICATE-----'});
  assert.deepEqual(poolConfig({DATABASE_URL:url+'?sslmode=require'}).ssl,{rejectUnauthorized:true});
  assert.throws(()=>poolConfig({DATABASE_URL:url+'?sslmode=require',SUPABASE_CA_CERT:'CERT'}),/must not contain sslmode/);
