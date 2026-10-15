@@ -83,8 +83,9 @@ try{
  assert.equal((await fetch(root+'/api/image/'+strayImage,{headers:{Cookie:admin}})).status,200,'stray upload exists before the sweep');assert.equal((await call({action:'save',entry:entries[2]})).status,200);assert.equal((await fetch(root+'/api/image/'+strayImage,{headers:{Cookie:admin}})).status,404,'unattached upload swept');assert.equal((await fetch(root+'/api/image/'+replacement,{headers:{Cookie:admin}})).status,200,'attached draft photo untouched by the sweep');
  assert.equal((await call({action:'delete',id:solo.id})).status,200);assert.equal((await fetch(root+'/api/image/'+replacement,{headers:{Cookie:admin}})).status,404,'unshared image removed');
  assert.equal((await call({action:'delete',id:crypto.randomUUID()})).status,404);
- const resetBlocked='Pause voting before resetting; finalized results cannot be reset.';
+ const resetBlocked='Pause voting before resetting; finalized results cannot be reset.',clearBlocked='Pause voting before clearing the contest.';
  r=await call({action:'reset'});assert.equal(r.status,409);assert.equal(r.data.error,resetBlocked);
+ r=await call({action:'clear'});assert.equal(r.status,409);assert.equal(r.data.error,clearBlocked);assert.equal((await get()).entries.length,3,'clear while open touches nothing');
  assert.equal((await get(voterA)).state,'open');
  assert.equal((await call({action:'ballot'},voterA)).data.votes.length,1);
  assert.equal((await call({action:'close'})).status,200);
@@ -92,14 +93,35 @@ try{
  assert.equal((await call({action:'reset'})).status,200);
  assert.equal((await get()).state,'draft');
  assert.equal((await call({action:'ballot'},voterA)).data.votes.length,0);
+ // A second published entry in the first category and one vote each make a tie, so the draw's locked insert path runs after finalize.
+ const tie={...entries[0],id:crypto.randomUUID(),name:'Test tie'};assert.equal((await call({action:'save',entry:tie})).status,200);
  assert.equal((await call({action:'open'})).status,200);
+ assert.equal((await call({action:'vote',entry:entries[0].id,category:categories[0]},voterA)).status,200);assert.equal((await call({action:'vote',entry:tie.id,category:categories[0]},voterB)).status,200);
+ assert.equal((await call({action:'draw',category:categories[0]})).status,400,'draw needs a closed contest');
  assert.equal((await call({action:'close'})).status,200);
  assert.equal((await call({action:'finalize'})).status,200);
+ r=await call({action:'draw',category:categories[0]});assert.equal(r.status,200);assert.ok([entries[0].id,tie.id].includes(r.data.draw.winner),'winner is one of the tied entries');
+ const again=await call({action:'draw',category:categories[0]});assert.equal(again.data.draw.winner,r.data.draw.winner,'a draw is permanent');assert.equal((await call({action:'draw',category:categories[1]})).status,400,'no tie in the second category');
+ assert.equal((await get()).draws.length,1);
  assert.equal((await call({action:'delete',id:entries[1].id})).status,409,'delete when closed');assert.ok((await get()).entries.some(e=>e.id===entries[1].id),'entry survives refused delete');
  assert.equal((await call({action:'save',entry:entries[0]})).status,400);
  assert.equal((await call({action:'open'})).status,400);
  r=await call({action:'reset'});assert.equal(r.status,409);assert.equal(r.data.error,resetBlocked);
  assert.equal((await get()).state,'closed');
  assert.equal((await fetch(root+'/api/contest',{method:'POST',headers:{Origin:'https://evil.example',Cookie:admin,'Content-Type':'application/json'},body:JSON.stringify({action:'reset'})})).status,403);
- console.log('PASS: Next.js API authorization, loopback-only preview cookie, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, voted-entry category/published lock (409), hidden standings for voters until closed, delete rules (votes 409, shared photo kept, orphan photo removed), image cache headers (published max-age, draft no-store), pause/finalize, reset guard (open 409, paused 200, finalized 409), cross-origin rejection.');
+ // Clear: allowed once finalized; removes every contestant, photo, vote and draw, returns to draft, and the voter's ballot is empty.
+ assert.equal((await fetch(root+'/api/image/'+image,{headers:{Cookie:voterA}})).status,200,'shared photo present before clear');
+ r=await call({action:'clear'});assert.equal(r.status,200);assert.equal(r.data.photosLeft,false);assert.equal(r.data.kept,false);
+ r=await call({action:'open'});assert.equal(r.status,400);assert.equal(r.data.error,'Publish at least one entry in every category first.');
+ const cleared=await get();assert.equal(cleared.state,'draft');assert.deepEqual(cleared.entries,[]);assert.deepEqual(cleared.standings,[]);assert.deepEqual(cleared.draws,[]);
+ assert.equal((await call({action:'ballot'},voterA)).data.votes.length,0,'ballot empty after clear');
+ assert.equal((await fetch(root+'/api/image/'+image,{headers:{Cookie:admin}})).status,404,'photo removed by clear');
+ // A stale editor (opened on a roster contestant, existing:true) cannot re-create a cleared contestant; a new save of the same data is a new contestant.
+ r=await call({action:'save',entry:{...entries[0],image:'sample:1'},existing:true});assert.equal(r.status,409);assert.equal(r.data.error,'This contestant was removed by another organizer, so it was not saved.');assert.deepEqual((await get()).entries,[]);
+ assert.equal((await call({action:'save',entry:{...entries[0],image:'sample:1'}})).status,200);assert.equal((await get()).entries.length,1,'a fresh save is accepted');
+ r=await call({action:'clear'});assert.equal(r.status,200);assert.equal(r.data.photosLeft,false,'a second clear is idempotent');assert.equal(r.data.kept,false);assert.deepEqual((await get()).entries,[]);
+ // Uploads hold the event row shared while they write; after a clear they work as before.
+ const fresh=new FormData();fresh.set('file',new Blob([bytes],{type:'image/png'}),'fresh.png');const freshUpload=await fetch(root+'/api/contest',{method:'POST',headers:{Origin:root,Cookie:admin},body:fresh});assert.equal(freshUpload.status,200);assert.equal((await fetch(root+'/api/image/'+(await freshUpload.json()).image,{headers:{Cookie:admin}})).status,200,'upload after clear');assert.equal((await get()).state,'draft');
+ assert.equal((await fetch(root+'/api/contest',{method:'POST',headers:{Origin:'https://evil.example',Cookie:admin,'Content-Type':'application/json'},body:JSON.stringify({action:'clear'})})).status,403);
+ console.log('PASS: Next.js API authorization, loopback-only preview cookie, private photos, upload/save, voter restrictions, concurrent votes, independent accounts, voted-entry category/published lock (409), hidden standings for voters until closed, delete rules (votes 409, shared photo kept, orphan photo removed), image cache headers (published max-age, draft no-store), pause/finalize, reset guard (open 409, paused 200, finalized 409), tie-break draw (closed only, permanent), clear (open 409, finalized 200 wipes roster, photos, votes and draws, idempotent), cross-origin rejection.');
 }catch(e){console.error(output.slice(-5000));throw e}finally{stub.close();server.kill('SIGTERM');await rm(tsconfigPath,{force:true})}
