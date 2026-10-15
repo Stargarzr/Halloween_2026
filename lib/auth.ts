@@ -1,11 +1,13 @@
-import {cookies} from 'next/headers';
+import {cookies,headers} from 'next/headers';
 import {cache} from 'react';
 import {authClient} from './supabase/server';
 import {memberFromVerifiedUser,type Member} from './access-policy';
-import {isLocalPreview,authConfigured} from './runtime';
+import {isLocalPreview,authConfigured,isLoopbackHost} from './runtime';
 export const localPreview=isLocalPreview();
 export const getMember=cache(async():Promise<Member|null>=>{
  if(isLocalPreview()){
+  const host=(await headers()).get('host');
+  if(!isLoopbackHost(host))return null;
   const role=(await cookies()).get('contest-local-preview')?.value;
   return role==='admin'||(role?.startsWith('voter:')&&/^voter:[a-f0-9-]{36}$/.test(role))?{id:`preview:${role}`,email:role==='admin'?'organizer@local.test':'voter@local.test',admin:role==='admin',localPreview:true}:null;
  }
