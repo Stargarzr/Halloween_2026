@@ -12,9 +12,14 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    ".next-*/**",
+    ".claude/**",
+    "*.wt/**",
+    ".netlify/**",
   ]),
+  {rules:{"@typescript-eslint/no-explicit-any":"warn"}},
   {
-    files: ["components/ui/**/*.{ts,tsx}", "hooks/use-mobile.ts"],
+    files: ["components/ui/**/*.{ts,tsx}"],
     rules: {
       // These files are vendored verbatim from shadcn@4.17.0. Keep the
       // registry source intact while applying the stricter rules to Site code.

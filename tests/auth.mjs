@@ -1,9 +1,15 @@
 import assert from 'node:assert/strict';
-import {eligibleEmail,memberFromVerifiedUser,administratorEmails} from '../lib/access-policy.ts';
+import {eligibleEmail,memberFromVerifiedUser,administratorEmails,normalizeEmail,hasPlusTag} from '../lib/access-policy.ts';
+import {isLoopbackHost} from '../lib/runtime.ts';
 for(const email of administratorEmails)assert.equal(memberFromVerifiedUser({id:'test',email,email_confirmed_at:'2026-10-07'}).admin,true);
 for(const email of ['coworker@cgi.com','coworker@cgifederal.com'])assert.equal(memberFromVerifiedUser({id:'test',email,email_confirmed_at:'2026-10-07'}).admin,false);
-for(const email of ['outsider@gmail.com','teri.musick@cgi.com.evil.com','p@sub.cgi.com','a@@cgi.com','a b@cgi.com'])assert.equal(eligibleEmail(email),false);
+for(const email of ['outsider@gmail.com','teri.musick@cgi.com.evil.com','p@sub.cgi.com','a@@cgi.com','a b@cgi.com','name+tag@cgi.com','name+1@cgifederal.com'])assert.equal(eligibleEmail(email),false);
 assert.equal(memberFromVerifiedUser({id:'fake',email:'teri.musick@cgi.com'}),null);
 assert.equal(memberFromVerifiedUser(null),null);
 const a=memberFromVerifiedUser({id:'same-person',email:'Person@CGI.com',email_confirmed_at:'2026-10-07'}),b=memberFromVerifiedUser({id:'same-person',email:'changed@cgi.com',email_confirmed_at:'2026-10-07'});assert.equal(a.id,b.id);
-console.log('PASS: four administrators, eligible domains, unverified-email rejection, voter permissions, stable account ID across email changes.');
+assert.equal(normalizeEmail(' A@CGI.com '),'a@cgi.com');
+assert.equal(hasPlusTag('name+tag@cgi.com'),true);
+assert.equal(hasPlusTag('name@cgi.com'),false);
+for(const host of ['localhost','LocalHost:5173','127.0.0.1:5173','[::1]:5173','[::1]'])assert.equal(isLoopbackHost(host),true);
+for(const host of ['localhost.attacker.example','127.0.0.1.attacker.example','evil.example','evil.example@localhost','localhost/path','localhost?x','localhost#x','127.1','0177.0.0.1','2130706433','[::ffff:127.0.0.1]','::1','localhost:','localhost:99999','localhost:5173:5173',' localhost','',undefined,null,['localhost']])assert.equal(isLoopbackHost(host),false,String(host));
+console.log('PASS: four administrators, eligible domains, unverified-email rejection, voter permissions, stable account ID across email changes, plus-tag rejection, email normalization, exact loopback-host matching.');
