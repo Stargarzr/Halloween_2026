@@ -9,11 +9,12 @@ export async function proxy(request:NextRequest){
   });
   try{await supabase.auth.getUser()}catch{/* Protected handlers fail closed when verification is unavailable. */}
  }
- response.headers.set('X-Frame-Options','DENY');
+ // The read-only photo wall is embedded as an Orator web slide; it has no controls to click-jack. Every other page refuses framing.
+ if(request.nextUrl.pathname!=='/wall')response.headers.set('X-Frame-Options','DENY');
  response.headers.set('Referrer-Policy','same-origin');
  response.headers.set('X-Content-Type-Options','nosniff');
  if(process.env.SITE_URL?.startsWith('https://'))response.headers.set('Strict-Transport-Security','max-age=31536000; includeSubDomains');
  if(!request.nextUrl.pathname.startsWith('/api/image/'))response.headers.set('Cache-Control','private, no-store');
  return response;
 }
-export const config={matcher:['/','/sign-in','/auth/:path*','/api/:path*']};
+export const config={matcher:['/','/sign-in','/wall','/auth/:path*','/api/:path*']};
